@@ -1,0 +1,23 @@
+{
+	"compilerOptions": {
+		"target": "ES2024",
+		"module": "ESNext",
+		"lib": ["ES2024", "DOM", "DOM.AsyncIterable"],
+		"moduleResolution": "Bundler",
+		"moduleDetection": "force",
+		"strict": true,
+		"skipLibCheck": true,
+		"allowArbitraryExtensions": true,
+		"verbatimModuleSyntax": true,
+		"noEmit": true,
+		"resolveJsonModule": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"jsx": "react-jsx",
+		"jsxImportSource": "react",
+		"types": ["bun"],
+		"typeRoots": ["./node_modules/@types"]
+	},
+	"include": ["src", "web"],
+	"exclude": ["node_modules", "dist"]
+}
