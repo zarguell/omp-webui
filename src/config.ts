@@ -11,7 +11,8 @@ export interface WebuiConfig {
 }
 
 function localDataDir(): string {
-	if (process.env.OMP_WEBUI_DATA_DIR || process.env.DATA_DIR) return process.env.OMP_WEBUI_DATA_DIR ?? process.env.DATA_DIR ?? "/data";
+	if (process.env.OMP_WEBUI_DATA_DIR || process.env.DATA_DIR)
+		return process.env.OMP_WEBUI_DATA_DIR ?? process.env.DATA_DIR ?? "/data";
 	try {
 		Bun.file("/data/.probe").size;
 	} catch (e) {
@@ -24,7 +25,8 @@ function localDataDir(): string {
 		return "/data";
 	} catch (e) {
 		const code = (e as { code?: string }).code;
-		if (code === "EROFS" || code === "EACCES" || code === "EPERM") return path.join(process.env.HOME ?? "/tmp", ".omp-webui");
+		if (code === "EROFS" || code === "EACCES" || code === "EPERM")
+			return path.join(process.env.HOME ?? "/tmp", ".omp-webui");
 	}
 	return "/data";
 }

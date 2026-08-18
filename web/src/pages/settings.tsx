@@ -3,45 +3,49 @@ import { apiGet, apiPut } from "../lib/api";
 
 export function SettingsPage(): React.ReactElement {
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
-	const [schema, setSchema] = useState<{ tabs?: string[]; schema?: Record<string, unknown> }>({});
+	const [loading, setLoading] = useState(true);
 	const [path, setPath] = useState("modelRoles.default");
 	const [value, setValue] = useState("");
 	const [msg, setMsg] = useState("");
 
-	useEffect(() => {
-		apiGet("/api/settings").then(v => setSettings(v as Record<string, unknown>)).catch(() => {});
-		apiGet("/api/settings/schema").then(v => setSchema(v as typeof schema)).catch(() => {});
-	}, []);
+	const refresh = async () => {
+		setLoading(true);
+		try { setSettings((await apiGet("/api/settings")) as Record<string, unknown>); } catch {} finally { setLoading(false); }
+	};
+	useEffect(() => { void refresh(); }, []);
 
 	return (
 		<div>
-			<h2>Settings</h2>
-			<details style={{ marginBottom: 12 }}>
-				<summary>Current config.yml (raw)</summary>
-				<pre style={{ background: "#f6f6f6", padding: 12, overflow: "auto", maxHeight: 300 }}>{JSON.stringify(settings, null, 2)}</pre>
-			</details>
-			{schema.tabs && schema.tabs.length > 0 && <p style={{ fontSize: 12, color: "#666" }}>Tabs: {schema.tabs.join(", ")}</p>}
-			<div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-				<input placeholder="path (e.g. modelRoles.default)" value={path} onChange={e => setPath(e.target.value)} style={{ flex: 1 }} />
-				<input placeholder='value (JSON, e.g. "anthropic/claude-sonnet-4-20250514")' value={value} onChange={e => setValue(e.target.value)} style={{ flex: 1 }} />
+			<h2 style={{ marginTop: 0 }}>Settings</h2>
+			<div className="card" style={{ marginBottom: 16 }}>
+				<details>
+					<summary style={{ cursor: "pointer", fontWeight: 600 }}>Current config.yml (raw)</summary>
+					<pre style={{ background: "var(--panel)", padding: 12, overflow: "auto", maxHeight: 300, borderRadius: 8, marginTop: 8 }}>{loading ? "Loading…" : JSON.stringify(settings, null, 2)}</pre>
+				</details>
+			</div>
+			<div className="card" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
+				<label style={{ flex: "1 1 200px", display: "grid", gap: 4 }}><span style={{ fontSize: "var(--text-xs)", color: "var(--muted)", fontWeight: 600 }}>Path</span><input aria-label="Setting path" placeholder="modelRoles.default" value={path} onChange={e => setPath(e.target.value)} /></label>
+				<label style={{ flex: "1 1 200px", display: "grid", gap: 4 }}><span style={{ fontSize: "var(--text-xs)", color: "var(--muted)", fontWeight: 600 }}>Value (JSON)</span><input aria-label="Setting value" placeholder='"anthropic/claude-sonnet-4-20250514"' value={value} onChange={e => setValue(e.target.value)} /></label>
 				<button
 					type="button"
+					className="btn btn-primary"
 					onClick={async () => {
 						setMsg("");
 						try {
 							let parsed: unknown = value;
 							try { parsed = JSON.parse(value); } catch {}
 							await apiPut("/api/settings", { path, value: parsed });
-							setMsg("Saved");
-							apiGet("/api/settings").then(v => setSettings(v as Record<string, unknown>)).catch(() => {});
+							setMsg("Saved ✓");
+							void refresh();
+							setTimeout(() => setMsg(""), 2000);
 						} catch (e) { setMsg(String(e)); }
 					}}
 				>
 					Save
 				</button>
 			</div>
-			{msg && <p style={{ fontSize: 12 }}>{msg}</p>}
-			<p style={{ fontSize: 12, color: "#666" }}>Or use the Terminal tab: <code>omp config set {path} value</code> / <code>vim ~/.omp/agent/config.yml</code></p>
+			{msg && <p aria-live="polite" style={{ fontSize: "var(--text-sm)", color: msg.includes("✓") ? "var(--success)" : "var(--error)" }}>{msg}</p>}
+			<p style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>Or use the Terminal tab: <code>omp config set {path} value</code> or <code>vim ~/.omp/agent/config.yml</code>.</p>
 		</div>
 	);
 }

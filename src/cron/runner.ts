@@ -23,7 +23,7 @@ interface ProjectRow {
 
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
-	return text.slice(0, max) + `\n…[truncated ${text.length - max} chars]`;
+	return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
 }
 
 export async function runJob(
@@ -110,9 +110,14 @@ export async function runJob(
 		output = truncate(error, MAX_OUTPUT);
 	}
 
-	db.prepare(
-		"UPDATE job_runs SET finished_at = ?, status = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
-	).run(new Date().toISOString(), status, exitCode, output, error, runId);
+	db.prepare("UPDATE job_runs SET finished_at = ?, status = ?, exit_code = ?, output = ?, error = ? WHERE id = ?").run(
+		new Date().toISOString(),
+		status,
+		exitCode,
+		output,
+		error,
+		runId,
+	);
 
 	return { runId, status };
 }

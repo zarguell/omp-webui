@@ -1,8 +1,9 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 
 export function migrate(db: Database): void {
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA busy_timeout = 5000");
+	db.run("PRAGMA foreign_keys = ON");
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS secrets (

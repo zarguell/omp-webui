@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Database } from "bun:sqlite";
 import { migrate } from "./migrate";
 
 let db: Database | null = null;
@@ -14,6 +14,7 @@ export function getDb(dbFilePath: string): Database {
 	}
 	fs.mkdirSync(path.dirname(dbFilePath), { recursive: true });
 	db = new Database(dbFilePath);
+	db.run("PRAGMA foreign_keys = ON");
 	migrate(db);
 	dbPath = dbFilePath;
 	return db;

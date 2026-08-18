@@ -41,9 +41,19 @@ function deriveStatus(tail: string): string | undefined {
 	}
 }
 
-export function listSessions(sessionsRoot: string, projectCwd?: string): SessionSummary[] {
-	if (!fs.existsSync(sessionsRoot)) return [];
+export function listSessions(
+	sessionsRoot: string,
+	projectCwd?: string,
+	opts?: { limit?: number; offset?: number },
+): { sessions: SessionSummary[]; total: number } {
+	if (!fs.existsSync(sessionsRoot)) return { sessions: [], total: 0 };
+	const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 200);
+	const offset = Math.max(opts?.offset ?? 0, 0);
+	const MAX_FILE_SIZE = 32 * 1024 * 1024;
+	const BIG_FILE_WARN = 10 * 1024 * 1024;
 	const results: SessionSummary[] = [];
+	let scanned = 0;
+	let skippedBig = 0;
 
 	function scanDir(dir: string) {
 		let entries: string[];
@@ -53,6 +63,7 @@ export function listSessions(sessionsRoot: string, projectCwd?: string): Session
 			return;
 		}
 		for (const entry of entries) {
+			if (entry.startsWith("__advisor")) continue;
 			const full = path.join(dir, entry);
 			let stat: fs.Stats;
 			try {
@@ -63,6 +74,15 @@ export function listSessions(sessionsRoot: string, projectCwd?: string): Session
 			if (stat.isDirectory()) {
 				scanDir(full);
 			} else if (entry.endsWith(".jsonl")) {
+				if (stat.size > MAX_FILE_SIZE) {
+					skippedBig++;
+					continue;
+				}
+				if (stat.size > BIG_FILE_WARN) {
+					console.warn(
+						`Skipping large session ${full} (${(stat.size / 1024 / 1024).toFixed(1)} MB) — use /raw with range`,
+					);
+				}
 				try {
 					const head = fs.readFileSync(full, "utf8").slice(0, 4096);
 					const tail = (() => {
@@ -92,6 +112,8 @@ export function listSessions(sessionsRoot: string, projectCwd?: string): Session
 						messageCount,
 						status: deriveStatus(tail),
 					});
+					scanned++;
+					if (scanned > 5000) return;
 				} catch {}
 			}
 		}
@@ -108,26 +130,74 @@ export function listSessions(sessionsRoot: string, projectCwd?: string): Session
 	}
 
 	results.sort((a, b) => b.modified.localeCompare(a.modified));
-	return results;
+	if (skippedBig > 0) console.warn(`Skipped ${skippedBig} sessions > ${MAX_FILE_SIZE / 1024 / 1024} MB`);
+	const total = results.length;
+	return { sessions: results.slice(offset, offset + limit), total };
 }
 
 function encodeSessionDir(cwd: string): string {
 	const resolved = path.resolve(cwd);
 	const home = process.env.HOME ?? "";
-	if (home && (resolved === home || resolved.startsWith(home + "/"))) {
+	if (home && (resolved === home || resolved.startsWith(`${home}/`))) {
 		const rel = path.relative(home, resolved);
 		return rel ? `-${rel.replace(/[/\\:]/g, "-")}` : "-";
 	}
 	const tmp = "/tmp";
-	if (resolved === tmp || resolved.startsWith(tmp + "/")) {
+	if (resolved === tmp || resolved.startsWith(`${tmp}/`)) {
 		const rel = path.relative(tmp, resolved);
 		return rel ? `-tmp-${rel.replace(/[/\\:]/g, "-")}` : "-tmp";
 	}
 	return `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
+function scanOneLevelForSession(sessionsRoot: string, sessionId: string): string | null {
+	function walk(dir: string): string | null {
+		let entries: string[];
+		try {
+			entries = fs.readdirSync(dir);
+		} catch {
+			return null;
+		}
+		for (const entry of entries) {
+			if (entry.startsWith("__advisor")) continue;
+			const full = path.join(dir, entry);
+			let stat: fs.Stats;
+			try {
+				stat = fs.statSync(full);
+			} catch {
+				continue;
+			}
+			if (stat.isDirectory()) {
+				const found = walk(full);
+				if (found) return found;
+			} else if (entry.endsWith(".jsonl") && entry.includes(sessionId)) {
+				return full;
+			}
+		}
+		return null;
+	}
+	return walk(sessionsRoot);
+}
+
+const sessionFileCache = new Map<string, string>();
+
 export function getSessionFile(sessionsRoot: string, sessionId: string): string | null {
-	const all = listSessions(sessionsRoot);
-	const found = all.find(s => s.id === sessionId || s.id.startsWith(sessionId) || s.path.includes(sessionId));
+	const cached = sessionFileCache.get(sessionId);
+	if (cached) {
+		try {
+			fs.statSync(cached);
+			return cached;
+		} catch {
+			sessionFileCache.delete(sessionId);
+		}
+	}
+	const direct = scanOneLevelForSession(sessionsRoot, sessionId);
+	if (direct) {
+		sessionFileCache.set(sessionId, direct);
+		return direct;
+	}
+	const all = listSessions(sessionsRoot, undefined, { limit: 200 });
+	const found = all.sessions.find(s => s.id === sessionId || s.id.startsWith(sessionId));
+	if (found?.path) sessionFileCache.set(sessionId, found.path);
 	return found?.path ?? null;
 }

@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getConfig } from "./config";
+import { writeCrontab } from "./cron/crontab";
 import { getDb } from "./db";
 import { buildInjectedEnv } from "./secrets/env";
-import { writeCrontab } from "./cron/crontab";
-import { listSessions, getSessionFile } from "./sessions/listing";
-import { streamSessionFile } from "./sessions/stream";
+import { getSessionFile, listSessions } from "./sessions/listing";
 import { getRpcSession, killAllRpcSessions, spawnOmpRpc } from "./sessions/spawn";
+import { streamSessionFile } from "./sessions/stream";
 import {
 	attachWs,
 	createTerminal,
@@ -15,6 +15,8 @@ import {
 	killAllTerminals,
 	killTerminal,
 	listTerminals,
+	terminalInput,
+	terminalResize,
 } from "./terminals/manager";
 
 const config = getConfig();
@@ -79,7 +81,10 @@ const server = Bun.serve({
 			} catch (e) {
 				return badRequest(String(e));
 			}
-			return json({ id, name, cwd: path.resolve(cwd), default_model: body.default_model ?? null, created_at: now }, 201);
+			return json(
+				{ id, name, cwd: path.resolve(cwd), default_model: body.default_model ?? null, created_at: now },
+				201,
+			);
 		}
 		const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
 		if (projectMatch) {
@@ -93,9 +98,18 @@ const server = Bun.serve({
 				const body = await parseJson(req);
 				const fields: string[] = [];
 				const vals: unknown[] = [];
-				if (body.name !== undefined) { fields.push("name = ?"); vals.push(String(body.name)); }
-				if (body.cwd !== undefined) { fields.push("cwd = ?"); vals.push(path.resolve(String(body.cwd))); }
-				if (body.default_model !== undefined) { fields.push("default_model = ?"); vals.push(body.default_model ? String(body.default_model) : null); }
+				if (body.name !== undefined) {
+					fields.push("name = ?");
+					vals.push(String(body.name));
+				}
+				if (body.cwd !== undefined) {
+					fields.push("cwd = ?");
+					vals.push(path.resolve(String(body.cwd)));
+				}
+				if (body.default_model !== undefined) {
+					fields.push("default_model = ?");
+					vals.push(body.default_model ? String(body.default_model) : null);
+				}
 				if (fields.length === 0) return badRequest("nothing to update");
 				vals.push(id);
 				db.prepare(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`).run(...(vals as never[]));
@@ -109,15 +123,67 @@ const server = Bun.serve({
 
 		if (pathname === "/api/sessions" && method === "GET") {
 			const projectId = url.searchParams.get("projectId");
+			const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 200);
+			const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
 			let projectCwd: string | undefined;
 			if (projectId) {
-				const proj = db.prepare("SELECT cwd FROM projects WHERE id = ?").get(projectId) as { cwd: string } | undefined;
+				const proj = db.prepare("SELECT cwd FROM projects WHERE id = ?").get(projectId) as
+					| { cwd: string }
+					| undefined;
 				if (proj) projectCwd = proj.cwd;
 			}
-			return json(listSessions(getSessionsRoot(), projectCwd));
+			const { sessions, total } = listSessions(getSessionsRoot(), projectCwd, { limit, offset });
+			return json({ sessions, total, limit, offset });
 		}
 		if (pathname === "/api/sessions" && method === "POST") {
 			const body = await parseJson(req);
+			const resumeId = body.resume ? String(body.resume).trim() : null;
+			if (resumeId) {
+				const existing = getRpcSession(resumeId);
+				if (existing) {
+					const prompt = String(body.prompt ?? "").trim();
+					if (prompt) {
+						try {
+							(existing.proc.stdin as unknown as { write(s: string): void }).write(
+								`${JSON.stringify({ type: "prompt", message: prompt })}\n`,
+							);
+						} catch {}
+					}
+					return json({ sessionId: resumeId, wsUrl: `/api/sessions/${resumeId}/ws`, resumed: true }, 201);
+				}
+				const file = getSessionFile(getSessionsRoot(), resumeId);
+				if (!file) return notFound("session to resume not found");
+				let cwd: string | undefined;
+				try {
+					const headerText = (await Bun.file(file).text()).split("\n").slice(0, 10).join("\n");
+					for (const line of headerText.split("\n")) {
+						try {
+							const obj = JSON.parse(line);
+							const h = obj.header ?? obj;
+							if (h?.cwd) {
+								cwd = h.cwd;
+								break;
+							}
+						} catch {}
+					}
+				} catch {}
+				const prompt = String(body.prompt ?? "").trim();
+				try {
+					await spawnOmpRpc({
+						db,
+						masterKeyPath: config.masterKeyPath,
+						agentDir: config.agentDir,
+						prompt,
+						cwd,
+						resumeId,
+						sessionId: resumeId,
+					});
+				} catch (e) {
+					return json({ error: String(e) }, 500);
+				}
+				const rpcAlive = !!getRpcSession(resumeId);
+				return json({ sessionId: resumeId, wsUrl: rpcAlive ? `/api/sessions/${resumeId}/ws` : null, resumed: true, rpcLive: rpcAlive }, 201);
+			}
 			const prompt = String(body.prompt ?? "").trim();
 			if (!prompt) return badRequest("prompt required");
 			const projectId = body.projectId ? String(body.projectId) : null;
@@ -135,7 +201,15 @@ const server = Bun.serve({
 			if (body.cwd) cwd = String(body.cwd);
 			const sessionId = Bun.randomUUIDv7();
 			try {
-				await spawnOmpRpc({ db, masterKeyPath: config.masterKeyPath, agentDir: config.agentDir, prompt, cwd, model, sessionId });
+				await spawnOmpRpc({
+					db,
+					masterKeyPath: config.masterKeyPath,
+					agentDir: config.agentDir,
+					prompt,
+					cwd,
+					model,
+					sessionId,
+				});
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
@@ -146,7 +220,20 @@ const server = Bun.serve({
 			const sid = sessionIdMatch[1];
 			const file = getSessionFile(getSessionsRoot(), sid);
 			if (!file) return notFound("session not found");
-			const sessions = listSessions(getSessionsRoot());
+			try {
+				const stat = fs.statSync(file);
+				if (stat.size > 32 * 1024 * 1024)
+					return json(
+						{
+							id: sid,
+							path: file,
+							size: stat.size,
+							warning: "session too large for summary — use /raw with Range",
+						},
+						200,
+					);
+			} catch {}
+			const { sessions } = listSessions(getSessionsRoot(), undefined, { limit: 200 });
 			const found = sessions.find(s => s.path === file);
 			return json(found ?? { id: sid, path: file });
 		}
@@ -155,43 +242,88 @@ const server = Bun.serve({
 			const sid = sessionRawMatch[1];
 			const file = getSessionFile(getSessionsRoot(), sid);
 			if (!file) return notFound();
+			const stat = fs.statSync(file);
+			if (stat.size > 5 * 1024 * 1024) {
+				const range = req.headers.get("range");
+				if (!range) {
+					const tail = Math.min(stat.size, 256 * 1024);
+					const fd = fs.openSync(file, "r");
+					const buf = Buffer.alloc(tail);
+					fs.readSync(fd, buf, 0, tail, stat.size - tail);
+					fs.closeSync(fd);
+					return new Response(buf, {
+						headers: { "content-type": "application/jsonl", "x-truncated": `tail 256KB of ${stat.size}` },
+					});
+				}
+			}
 			return new Response(Bun.file(file));
 		}
 		const sessionStreamMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/stream$/);
 		if (sessionStreamMatch && method === "GET") {
 			const sid = sessionStreamMatch[1];
-			const file = getSessionFile(getSessionsRoot(), sid);
-			if (!file) return notFound();
-			let ctrl: ReadableStreamDefaultController<string> | null = null;
-			let streamCtrl: ReturnType<typeof streamSessionFile> | null = null;
+			let file = getSessionFile(getSessionsRoot(), sid);
+			const rpcEntry = getRpcSession(sid);
+			if (!file && !rpcEntry) return notFound();
+			if (!file && rpcEntry) {
+				// Active RPC session — wait briefly for the session file to appear
+				for (let i = 0; i < 10; i++) {
+					await Bun.sleep(200);
+					file = getSessionFile(getSessionsRoot(), sid);
+					if (file) break;
+				}
+				if (!file) return notFound("session file not yet available");
+			}
+			let keepAlive: ReturnType<typeof setInterval> | null = null;
+			let streamCtrl: { close(): void } | null = null;
 			const stream = new ReadableStream<string>({
 				start(c) {
-					ctrl = c;
 					const send = (line: string) => {
-						try { c.enqueue(`data: ${line}\n\n`); } catch {}
+						try {
+							c.enqueue(`data: ${line}\n\n`);
+						} catch {}
 					};
-					streamCtrl = streamSessionFile(file, send, err => {
-						try { c.enqueue(`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`); } catch {}
+					try {
+						c.enqueue(`: keepalive\n\n`);
+					} catch {}
+					keepAlive = setInterval(() => {
+						try {
+							c.enqueue(`: keepalive\n\n`);
+						} catch {}
+					}, 15000);
+					void streamSessionFile(file!, send, err => {
+						try {
+							c.enqueue(`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`);
+						} catch {}
+					}).then(ctrl => {
+						streamCtrl = ctrl;
 					});
 				},
 				cancel() {
+					if (keepAlive) clearInterval(keepAlive);
 					streamCtrl?.close();
 				},
 			});
 			return new Response(stream, {
-				headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+				headers: {
+					"content-type": "text/event-stream",
+					"cache-control": "no-cache",
+					connection: "keep-alive",
+					"x-accel-buffering": "no",
+				},
 			});
 		}
 		const sessionPromptMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/prompt$/);
 		if (sessionPromptMatch && method === "POST") {
 			const sid = sessionPromptMatch[1];
-			const proc = getRpcSession(sid);
-			if (!proc) return notFound("no active rpc session");
+			const entry = getRpcSession(sid);
+			if (!entry) return notFound("no active rpc session");
 			const body = await parseJson(req);
 			const text = String(body.text ?? body.prompt ?? body.message ?? "");
 			if (!text) return badRequest("text required");
 			try {
-				(proc.stdin as unknown as { write(s: string): void }).write(JSON.stringify({ type: "prompt", message: text }) + "\n");
+				(entry.proc.stdin as unknown as { write(s: string): void }).write(
+					`${JSON.stringify({ type: "prompt", message: text })}\n`,
+				);
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
@@ -200,18 +332,38 @@ const server = Bun.serve({
 		const sessionAbortMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/abort$/);
 		if (sessionAbortMatch && method === "POST") {
 			const sid = sessionAbortMatch[1];
-			const proc = getRpcSession(sid);
-			if (!proc) return notFound();
+			const entry = getRpcSession(sid);
+			if (!entry) return notFound();
 			try {
-				(proc.stdin as unknown as { write(s: string): void }).write(JSON.stringify({ type: "abort" }) + "\n");
+				(entry.proc.stdin as unknown as { write(s: string): void }).write(`${JSON.stringify({ type: "abort" })}\n`);
 			} catch {}
 			return json({ ok: true });
 		}
 		const sessionModelMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/model$/);
+		if (sessionModelMatch && method === "GET") {
+			const sid = sessionModelMatch[1];
+			const file = getSessionFile(getSessionsRoot(), sid);
+			if (!file) return notFound();
+			try {
+				const fd = fs.openSync(file, "r");
+				const buf = Buffer.alloc(8192);
+				fs.readSync(fd, buf, 0, 8192, 0);
+				fs.closeSync(fd);
+				const text = buf.toString("utf8");
+				let model = "";
+				for (const line of text.split("\n")) {
+					try {
+						const obj = JSON.parse(line);
+						if (obj.type === "model_change" && obj.model) model = obj.model;
+					} catch {}
+				}
+				return json({ model: model || null });
+			} catch { return json({ model: null }); }
+		}
 		if (sessionModelMatch && method === "POST") {
 			const sid = sessionModelMatch[1];
-			const proc = getRpcSession(sid);
-			if (!proc) return notFound();
+			const entry = getRpcSession(sid);
+			if (!entry) return notFound();
 			const body = await parseJson(req);
 			const selector = String(body.selector ?? body.model ?? "");
 			if (!selector) return badRequest("selector required");
@@ -219,34 +371,61 @@ const server = Bun.serve({
 			const provider = slash > 0 ? selector.slice(0, slash) : "";
 			const modelId = slash > 0 ? selector.slice(slash + 1).split(":")[0] : selector.split(":")[0];
 			try {
-				(proc.stdin as unknown as { write(s: string): void }).write(
-					JSON.stringify(provider ? { type: "set_model", provider, modelId } : { type: "set_model", provider: selector, modelId: "" }) + "\n",
+				(entry.proc.stdin as unknown as { write(s: string): void }).write(
+					`${JSON.stringify(provider ? { type: "set_model", provider, modelId } : { type: "set_model", provider: selector, modelId: "" })}\n`,
 				);
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
 			return json({ ok: true });
 		}
-		if (pathname.match(/^\/api\/sessions\/[^/]+\/ws$/)) {
-			const sid = pathname.split("/")[3];
-			const proc = getRpcSession(sid);
-			if (!proc) return notFound("no active rpc session");
-			if (server.upgrade(req)) return undefined as unknown as Response;
-			return new Response("Upgrade failed", { status: 426 });
-		}
 
 		if (pathname === "/api/models" && method === "GET") {
 			try {
-				const proc = Bun.spawn(["omp", "models", "--json"], { stdout: "pipe", stderr: "pipe", env: buildInjectedEnv(db, config.masterKeyPath, config.agentDir) });
+				const proc = Bun.spawn(["omp", "models", "--json"], {
+					stdout: "pipe",
+					stderr: "pipe",
+					env: buildInjectedEnv(db, config.masterKeyPath, config.agentDir),
+				});
 				const text = await new Response(proc.stdout).text();
 				await proc.exited;
-				try { return json(JSON.parse(text)); } catch { return json({ raw: text }); }
+				try {
+					return json(JSON.parse(text));
+				} catch {
+					return json({ raw: text });
+				}
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
 		}
 		if (pathname === "/api/providers" && method === "GET") {
-			return json({ hint: "Add provider keys as secrets: ANTHROPIC_API_KEY, OPENAI_API_KEY, etc." });
+			const { listSecrets } = await import("./secrets/store");
+			const secrets = new Set(listSecrets(db).map(s => s.name));
+			const providers = [
+				{ id: "anthropic", env: "ANTHROPIC_API_KEY", hasAuth: secrets.has("ANTHROPIC_API_KEY") },
+				{ id: "openai", env: "OPENAI_API_KEY", hasAuth: secrets.has("OPENAI_API_KEY") },
+				{ id: "openai-codex", env: "OPENAI_API_KEY", hasAuth: secrets.has("OPENAI_API_KEY") },
+				{
+					id: "google",
+					env: "GEMINI_API_KEY",
+					hasAuth: secrets.has("GEMINI_API_KEY") || secrets.has("GOOGLE_API_KEY"),
+				},
+				{
+					id: "google-vertex",
+					env: "GOOGLE_APPLICATION_CREDENTIALS",
+					hasAuth: secrets.has("GOOGLE_APPLICATION_CREDENTIALS"),
+				},
+				{
+					id: "github-copilot",
+					env: "GITHUB_TOKEN",
+					hasAuth: secrets.has("GITHUB_TOKEN") || secrets.has("COPILOT_GITHUB_TOKEN"),
+				},
+				{ id: "xai", env: "XAI_API_KEY", hasAuth: secrets.has("XAI_API_KEY") },
+				{ id: "groq", env: "GROQ_API_KEY", hasAuth: secrets.has("GROQ_API_KEY") },
+				{ id: "mistral", env: "MISTRAL_API_KEY", hasAuth: secrets.has("MISTRAL_API_KEY") },
+				{ id: "deepseek", env: "DEEPSEEK_API_KEY", hasAuth: secrets.has("DEEPSEEK_API_KEY") },
+			];
+			return json(providers);
 		}
 
 		if (pathname === "/api/settings" && method === "GET") {
@@ -268,7 +447,9 @@ const server = Bun.serve({
 				const { YAML } = await import("bun");
 				let existing: Record<string, unknown> = {};
 				if (fs.existsSync(cfgPath)) {
-					try { existing = (YAML.parse(await Bun.file(cfgPath).text()) as Record<string, unknown>) ?? {}; } catch {}
+					try {
+						existing = (YAML.parse(await Bun.file(cfgPath).text()) as Record<string, unknown>) ?? {};
+					} catch {}
 				}
 				if (body.patch && typeof body.patch === "object") {
 					for (const [k, v] of Object.entries(body.patch as Record<string, unknown>)) {
@@ -301,7 +482,10 @@ const server = Bun.serve({
 			try {
 				const mod = await import("@oh-my-pi/pi-coding-agent/config/settings-schema" as string).catch(() => null);
 				if (!mod) return json({ tabs: [], schema: {} });
-				return json({ tabs: (mod as { SETTING_TABS?: unknown }).SETTING_TABS ?? [], schema: (mod as { SETTINGS_SCHEMA?: unknown }).SETTINGS_SCHEMA ?? {} });
+				return json({
+					tabs: (mod as { SETTING_TABS?: unknown }).SETTING_TABS ?? [],
+					schema: (mod as { SETTINGS_SCHEMA?: unknown }).SETTINGS_SCHEMA ?? {},
+				});
 			} catch {
 				return json({ tabs: [], schema: {} });
 			}
@@ -316,6 +500,8 @@ const server = Bun.serve({
 			const name = String(body.name ?? "").trim();
 			const value = String(body.value ?? "");
 			if (!name || !value) return badRequest("name and value required");
+			if (value.length > 8192) return badRequest("value too large (max 8192)");
+			if (db.prepare("SELECT 1 FROM secrets").all().length >= 100) return badRequest("too many secrets (max 100)");
 			try {
 				const { createSecret } = await import("./secrets/store");
 				return json(createSecret(db, config.masterKeyPath, name, value), 201);
@@ -323,12 +509,24 @@ const server = Bun.serve({
 				return badRequest(String(e));
 			}
 		}
-		const secretDeleteMatch = pathname.match(/^\/api\/secrets\/([^/]+)$/);
-		if (secretDeleteMatch && method === "DELETE") {
+		const secretMatch = pathname.match(/^\/api\/secrets\/([^/]+)$/);
+		if (secretMatch && method === "DELETE") {
 			try {
 				const { deleteSecret } = await import("./secrets/store");
-				deleteSecret(db, secretDeleteMatch[1]);
+				deleteSecret(db, secretMatch[1]);
 				return json({ ok: true });
+			} catch (e) {
+				return notFound(String(e));
+			}
+		}
+		if (secretMatch && method === "PATCH") {
+			const body = await parseJson(req);
+			const value = String(body.value ?? "");
+			if (!value) return badRequest("value required");
+			if (value.length > 8192) return badRequest("value too large (max 8192)");
+			try {
+				const { updateSecret } = await import("./secrets/store");
+				return json(updateSecret(db, config.masterKeyPath, secretMatch[1], value));
 			} catch (e) {
 				return notFound(String(e));
 			}
@@ -344,12 +542,27 @@ const server = Bun.serve({
 			const prompt = String(body.prompt ?? "").trim();
 			if (!name || !cron_expr || !prompt) return badRequest("name, cron, prompt required");
 			const { validateCronExpr } = await import("./cron/crontab");
-			try { validateCronExpr(cron_expr); } catch (e) { return badRequest(String(e)); }
+			try {
+				validateCronExpr(cron_expr);
+			} catch (e) {
+				return badRequest(String(e));
+			}
 			const id = Bun.randomUUIDv7();
 			const now = new Date().toISOString();
 			db.prepare(
 				"INSERT INTO jobs (id, name, cron_expr, prompt, model, project_id, cwd, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			).run(id, name, cron_expr, prompt, body.model ? String(body.model) : null, body.projectId ? String(body.projectId) : null, body.cwd ? String(body.cwd) : null, body.enabled === false ? 0 : 1, now, now);
+			).run(
+				id,
+				name,
+				cron_expr,
+				prompt,
+				body.model ? String(body.model) : null,
+				body.projectId ? String(body.projectId) : null,
+				body.cwd ? String(body.cwd) : null,
+				body.enabled === false ? 0 : 1,
+				now,
+				now,
+			);
 			syncCrontab();
 			return json(db.prepare("SELECT * FROM jobs WHERE id = ?").get(id), 201);
 		}
@@ -368,7 +581,11 @@ const server = Bun.serve({
 				if (src !== undefined) {
 					if (k === "cron_expr" && src) {
 						const { validateCronExpr } = await import("./cron/crontab");
-						try { validateCronExpr(String(src)); } catch (e) { return badRequest(String(e)); }
+						try {
+							validateCronExpr(String(src));
+						} catch (e) {
+							return badRequest(String(e));
+						}
 					}
 					fields.push(`${k} = ?`);
 					vals.push(k === "enabled" ? (src ? 1 : 0) : src === null ? null : String(src));
@@ -447,13 +664,30 @@ const server = Bun.serve({
 			const id = pathname.split("/")[3];
 			const entry = getTerminal(id);
 			if (!entry) return notFound("terminal not found");
-			if (server.upgrade(req)) return undefined as unknown as Response;
+			if (
+				(server as unknown as { upgrade(r: Request, o: unknown): boolean }).upgrade(req, { data: { url: req.url } })
+			)
+				return undefined as unknown as Response;
+			return new Response("Upgrade failed", { status: 426 });
+		}
+		if (pathname.match(/^\/api\/sessions\/[^/]+\/ws$/)) {
+			const sid = pathname.split("/")[3];
+			const proc = getRpcSession(sid);
+			if (!proc) return notFound("no active rpc session");
+			if (
+				(server as unknown as { upgrade(r: Request, o: unknown): boolean }).upgrade(req, { data: { url: req.url } })
+			)
+				return undefined as unknown as Response;
 			return new Response("Upgrade failed", { status: 426 });
 		}
 
 		const distDir = path.join(import.meta.dir, "../dist/web");
-		const webFile = pathname === "/" ? "/index.html" : pathname;
+		const normalized = path.normalize(pathname);
+		if (normalized.includes("..")) return new Response("Not found", { status: 404 });
+		const webFile = normalized === "/" ? "/index.html" : normalized;
 		const filePath = path.join(distDir, webFile);
+		if (!filePath.startsWith(distDir + path.sep) && filePath !== path.join(distDir, "index.html"))
+			return new Response("Not found", { status: 404 });
 		const file = Bun.file(filePath);
 		if (await file.exists()) return new Response(file);
 		const indexFile = Bun.file(path.join(distDir, "index.html"));
@@ -463,15 +697,42 @@ const server = Bun.serve({
 
 	websocket: {
 		open(ws) {
-			(ws as unknown as { data?: unknown }).data = {};
+			const url = (ws as unknown as { data?: { url?: string } }).data?.url ?? "";
+			const termMatch = url.match(/\/api\/terminals\/([^/]+)\/ws/);
+			const sessMatch = url.match(/\/api\/sessions\/([^/]+)\/ws/);
+			if (termMatch) {
+				const id = termMatch[1];
+				const entry = getTerminal(id);
+				if (entry) {
+					attachWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
+					(ws as unknown as { attached: boolean }).attached = true;
+					(ws as unknown as { terminalId: string }).terminalId = id;
+				}
+			} else if (sessMatch) {
+				const sid = sessMatch[1];
+				const entry = getRpcSession(sid);
+				if (entry) {
+					void import("./sessions/spawn").then(({ attachRpcWs }) => {
+						attachRpcWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
+					});
+					(ws as unknown as { attached: boolean }).attached = true;
+					(ws as unknown as { rpcSessionId: string }).rpcSessionId = sid;
+				}
+			}
 		},
-		message(ws, message) {
+		async message(ws, message) {
 			const raw = typeof message === "string" ? message : new TextDecoder().decode(message as Uint8Array);
 			let parsed: Record<string, unknown>;
-			try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { parsed = { type: "input", data: raw }; }
-			const url = (ws as unknown as { url?: string }).url ?? "";
-			if (url.includes("/api/terminals/")) {
-				const id = url.split("/")[3];
+			try {
+				parsed = JSON.parse(raw) as Record<string, unknown>;
+			} catch {
+				parsed = { type: "input", data: raw };
+			}
+			const url = (ws as unknown as { data?: { url?: string } }).data?.url ?? "";
+			const termMatch = url.match(/\/api\/terminals\/([^/]+)\/ws/);
+			const sessMatch = url.match(/\/api\/sessions\/([^/]+)\/ws/);
+			if (termMatch) {
+				const id = termMatch[1];
 				const entry = getTerminal(id);
 				if (!entry) return;
 				if ((ws as unknown as { attached?: boolean }).attached !== true) {
@@ -480,21 +741,35 @@ const server = Bun.serve({
 					(ws as unknown as { terminalId: string }).terminalId = id;
 				}
 				if (parsed.type === "input" && typeof parsed.data === "string") {
-					try { (entry.subprocess.stdin as unknown as { write(s: string): void }).write(parsed.data); } catch {}
+					terminalInput(id, parsed.data);
 				} else if (parsed.type === "resize" && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
-					try { (entry.subprocess as unknown as { resize(c: number, r: number): void }).resize?.(parsed.cols, parsed.rows); } catch {}
+					terminalResize(id, parsed.cols, parsed.rows);
 				}
 				return;
 			}
-			if (url.includes("/api/sessions/")) {
-				const sid = url.split("/")[3];
-				const proc = getRpcSession(sid);
-				if (!proc) return;
-				if (parsed.type === "prompt" && typeof parsed.message === "string") {
-					try { (proc.stdin as unknown as { write(s: string): void }).write(JSON.stringify({ type: "prompt", message: parsed.message }) + "\n"); } catch {}
-				} else if (parsed.type === "abort") {
-					try { (proc.stdin as unknown as { write(s: string): void }).write(JSON.stringify({ type: "abort" }) + "\n"); } catch {}
+			if (sessMatch) {
+				const sid = sessMatch[1];
+				const entry = getRpcSession(sid);
+				if (!entry) return;
+				if ((ws as unknown as { attached?: boolean }).attached !== true) {
+					const { attachRpcWs } = await import("./sessions/spawn");
+					attachRpcWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
+					(ws as unknown as { attached: boolean }).attached = true;
+					(ws as unknown as { rpcSessionId: string }).rpcSessionId = sid;
 				}
+				if (parsed.type === "prompt" && typeof parsed.message === "string") {
+					try {
+						(entry.proc.stdin as unknown as { write(s: string): void }).write(
+							`${JSON.stringify({ type: "prompt", message: parsed.message })}\n`,
+						);
+					} catch {}
+				} else if (parsed.type === "abort") {
+				try {
+					(entry.proc.stdin as unknown as { write(s: string): void }).write(
+						`${JSON.stringify({ type: "abort" })}\n`,
+					);
+				} catch {}
+			}
 			}
 		},
 		close(ws) {
@@ -502,6 +777,14 @@ const server = Bun.serve({
 			if (id) {
 				const entry = getTerminal(id);
 				if (entry) detachWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
+			}
+			const rpcId = (ws as unknown as { rpcSessionId?: string }).rpcSessionId;
+			if (rpcId) {
+				const entry = getRpcSession(rpcId);
+				if (entry)
+					try {
+						entry.wsClients.delete(ws as unknown as Bun.ServerWebSocket<unknown>);
+					} catch {}
 			}
 		},
 	},
@@ -520,7 +803,19 @@ syncCrontab();
 if (config.bind === "0.0.0.0") {
 	console.warn("WARNING: omp-webui bound to 0.0.0.0 — terminal is RCE. Put behind Tailscale/reverse-proxy auth.");
 }
-console.log(`omp-webui listening on http://${config.bind}:${config.port}  data=${path.dirname(config.dbPath)} agent=${config.agentDir}`);
+console.log(
+	`omp-webui listening on http://${config.bind}:${config.port}  data=${path.dirname(config.dbPath)} agent=${config.agentDir}`,
+);
 
-process.on("SIGINT", () => { killAllRpcSessions(); killAllTerminals(); server.stop(); process.exit(0); });
-process.on("SIGTERM", () => { killAllRpcSessions(); killAllTerminals(); server.stop(); process.exit(0); });
+process.on("SIGINT", () => {
+	killAllRpcSessions();
+	killAllTerminals();
+	server.stop();
+	process.exit(0);
+});
+process.on("SIGTERM", () => {
+	killAllRpcSessions();
+	killAllTerminals();
+	server.stop();
+	process.exit(0);
+});

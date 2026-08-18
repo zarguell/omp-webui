@@ -25,7 +25,9 @@ export function validateEnvName(name: string): void {
 }
 
 export function listSecrets(db: Database): SecretPublic[] {
-	const rows = db.prepare("SELECT id, name, created_at, updated_at FROM secrets ORDER BY name").all() as SecretPublic[];
+	const rows = db
+		.prepare("SELECT id, name, created_at, updated_at FROM secrets ORDER BY name")
+		.all() as SecretPublic[];
 	return rows;
 }
 
@@ -56,7 +58,9 @@ export function updateSecret(db: Database, masterKeyPath: string, id: string, va
 	const key = getMasterKey(masterKeyPath);
 	const encrypted = encrypt(value, key);
 	const now = new Date().toISOString();
-	const result = db.prepare("UPDATE secrets SET encrypted_value = ?, updated_at = ? WHERE id = ?").run(encrypted, now, id);
+	const result = db
+		.prepare("UPDATE secrets SET encrypted_value = ?, updated_at = ? WHERE id = ?")
+		.run(encrypted, now, id);
 	if (result.changes === 0) throw new Error(`Secret ${id} not found`);
 	const row = db.prepare("SELECT id, name, created_at, updated_at FROM secrets WHERE id = ?").get(id) as SecretPublic;
 	return row;

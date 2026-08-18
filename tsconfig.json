@@ -1,23 +1,9 @@
 {
+	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
-		"target": "ES2024",
-		"module": "ESNext",
-		"lib": ["ES2024", "DOM", "DOM.AsyncIterable"],
-		"moduleResolution": "Bundler",
-		"moduleDetection": "force",
-		"strict": true,
-		"skipLibCheck": true,
-		"allowArbitraryExtensions": true,
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"resolveJsonModule": true,
-		"esModuleInterop": true,
-		"forceConsistentCasingInFileNames": true,
 		"jsx": "react-jsx",
-		"jsxImportSource": "react",
-		"types": ["bun"],
-		"typeRoots": ["./node_modules/@types"]
+		"jsxImportSource": "react"
 	},
-	"include": ["src", "web"],
+	"include": ["src", "web", "scripts"],
 	"exclude": ["node_modules", "dist"]
 }
