@@ -4,7 +4,30 @@
 
 Headless management layer for [oh-my-pi](https://github.com/can1357/oh-my-pi) — sessions, secrets, cron, and a browser terminal.
 
-> **No auth.** Put behind Tailscale / WireGuard / reverse-proxy auth. The terminal is RCE.
+## Threat Model
+
+**omp-webui is designed for trusted, single-user, local-only deployments.** It has no authentication, no authorization, and no session management. Every endpoint is fully open.
+
+### What this means
+
+- **Anyone who can reach the port has full control.** The terminal gives shell access. The secrets page exposes API keys. Sessions can be read, resumed, and prompted. Cron jobs can be created and deleted.
+- **There is no auth layer by design.** Adding authentication is out of scope — the app assumes network-level access control.
+- **The terminal is RCE.** A browser terminal session runs arbitrary commands on the host with the server's permissions.
+
+### Safe deployment
+
+| Scenario | Safe? | Notes |
+|---|---|---|
+| `localhost:8787` on a personal machine | ✅ | Default config. Only reachable from the same machine. |
+| Behind Tailscale / WireGuard | ✅ | Network-level auth. Only trusted devices reach the port. |
+| Behind reverse proxy with auth (e.g. Cloudflare Access, oauth2-proxy) | ✅ | Proxy handles auth before traffic reaches the app. |
+| Docker with `-p 127.0.0.1:8787:8787` | ✅ | Bound to loopback only. |
+| `0.0.0.0` on a LAN | ⚠️ | Anyone on the network can access it. Use only on trusted LANs. |
+| Exposed to the internet | ❌ | **Never.** Full RCE with no auth. |
+
+### If you need multi-user or internet access
+
+This is not the right tool. Use a proper IDE environment with auth (e.g. GitHub Codespaces, Gitpod, code-server with auth).
 
 ## Run
 
