@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7-labs
+# syntax=docker/dockerfile:1.26-labs
 ARG BUN_VERSION=1.3.14
 ARG SUPERCRONIC_VERSION=v0.2.33
 
