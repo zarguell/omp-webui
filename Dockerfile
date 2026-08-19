@@ -10,7 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_
     BUN_INSTALL=/opt/bun \
     PATH=/opt/bun/bin:/usr/local/bin:/usr/bin:/bin
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip openssh-client tini sqlite3 build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" && /opt/bun/bin/bun --version \
+ && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
+ && if [ "$(uname -m)" = "x86_64" ]; then \
+      curl -fsSL -o /tmp/bun-baseline.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-baseline.zip" \
+      && unzip -j -o /tmp/bun-baseline.zip "*/bun" -d /opt/bun/bin && rm /tmp/bun-baseline.zip; \
+    fi \
+ && /opt/bun/bin/bun --version \
  && bun install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION} && /opt/bun/bin/omp --version
 
 FROM base AS builder
