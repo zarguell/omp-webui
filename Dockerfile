@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
 FROM base AS builder
 WORKDIR /app
 COPY package.json tsconfig.json vite.config.ts ./
-RUN OMPI_WEBUI_SKIP_PTY=1 bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache OMPI_WEBUI_SKIP_PTY=1 bun install
 COPY src ./src
 COPY web ./web
 RUN bun run build
@@ -40,7 +40,7 @@ COPY --from=builder /app/dist /app/dist
 # Terminal PTY host: node + node-pty (compiled for this arch), resolvable from /app/dist/pty-host.mjs
 WORKDIR /app
 COPY package.json ./
-RUN npm install node-pty@1.1.0 --no-save --omit=dev --loglevel=error && node -e "require('node-pty')"
+RUN --mount=type=cache,target=/root/.npm npm install node-pty@1.1.0 --no-save --omit=dev --loglevel=error && node -e "require('node-pty')"
 COPY entrypoint.sh /usr/local/bin/omp-webui-entrypoint
 RUN chmod +x /usr/local/bin/omp-webui-entrypoint
 VOLUME ["/data"]
