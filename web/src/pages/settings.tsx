@@ -9,8 +9,8 @@ export function SettingsPage(): React.ReactElement {
 	const [value, setValue] = useState("");
 	const [msg, setMsg] = useState("");
 
-	const refresh = async () => {
-		setLoading(true);
+	const refresh = async (silent = false) => {
+		if (!silent) setLoading(true);
 		try {
 			setSettings((await apiGet("/api/settings")) as Record<string, unknown>);
 		} catch {
@@ -20,7 +20,7 @@ export function SettingsPage(): React.ReactElement {
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 
 	return (
 		<div>
@@ -94,7 +94,7 @@ export function SettingsPage(): React.ReactElement {
 							} catch {}
 							await apiPut("/api/settings", { path, value: parsed });
 							setMsg("Saved ✓");
-							void refresh();
+							void refresh(true);
 							setTimeout(() => setMsg(""), 2000);
 						} catch (e) {
 							setMsg(String(e));

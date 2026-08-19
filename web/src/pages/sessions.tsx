@@ -115,8 +115,8 @@ export function SessionsPage({
 	const pageSize = 20;
 	const [page, setPage] = useState(0);
 
-	const refresh = async () => {
-		setLoading(true);
+	const refresh = async (silent = false) => {
+		if (!silent) setLoading(true);
 		setErr("");
 		try {
 			const [s, p] = await Promise.all([
@@ -136,7 +136,7 @@ export function SessionsPage({
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 	useEffect(() => {
 		if (streamRef.current)
 			streamRef.current.scrollTop = streamRef.current.scrollHeight;
@@ -169,7 +169,7 @@ export function SessionsPage({
 			setRpcStatus("connecting");
 			attachRpc(res.sessionId);
 			void openStream(res.sessionId);
-			void refresh();
+			void refresh(true);
 		} catch (e) {
 			setErr(String(e));
 			setPrompt(p);
@@ -372,7 +372,7 @@ export function SessionsPage({
 					}}
 					style={{ flex: 1 }}
 				/>
-				<button type="button" className="btn" onClick={() => void refresh()}>
+				<button type="button" className="btn" onClick={() => void refresh(true)}>
 					Refresh
 				</button>
 			</div>

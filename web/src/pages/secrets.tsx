@@ -15,8 +15,8 @@ export function SecretsPage(): React.ReactElement {
 	const [err, setErr] = useState("");
 	const [toast, setToast] = useState("");
 
-	const refresh = async () => {
-		setLoading(true);
+	const refresh = async (silent = false) => {
+		if (!silent) setLoading(true);
 		try {
 			setSecrets((await apiGet("/api/secrets")) as typeof secrets);
 		} catch (e) {
@@ -27,7 +27,7 @@ export function SecretsPage(): React.ReactElement {
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 
 	const validName = !name || ENV_RE.test(name);
 	const canAdd = name.trim() && value && validName;
@@ -119,7 +119,7 @@ export function SecretsPage(): React.ReactElement {
 								setName("");
 								setValue("");
 								setToast("Secret saved");
-								void refresh();
+								void refresh(true);
 								setTimeout(() => setToast(""), 2000);
 							} catch (e) {
 								setErr(String(e));
@@ -196,7 +196,7 @@ export function SecretsPage(): React.ReactElement {
 									)
 										return;
 									await apiDelete(`/api/secrets/${s.id}`);
-									void refresh();
+									void refresh(true);
 								}}
 							>
 								Delete

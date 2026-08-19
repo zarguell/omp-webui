@@ -11,8 +11,8 @@ export function ProjectsPage(): React.ReactElement {
 	const [cwd, setCwd] = useState("");
 	const [err, setErr] = useState("");
 
-	const refresh = async () => {
-		setLoading(true);
+	const refresh = async (silent = false) => {
+		if (!silent) setLoading(true);
 		try {
 			setProjects((await apiGet("/api/projects")) as typeof projects);
 		} catch (e) {
@@ -23,7 +23,7 @@ export function ProjectsPage(): React.ReactElement {
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 
 	return (
 		<div>
@@ -82,7 +82,7 @@ export function ProjectsPage(): React.ReactElement {
 							await apiPost("/api/projects", { name, cwd });
 							setName("");
 							setCwd("");
-							void refresh();
+							void refresh(true);
 						} catch (e) {
 							setErr(String(e));
 						}
@@ -148,7 +148,7 @@ export function ProjectsPage(): React.ReactElement {
 									)
 										return;
 									await apiDelete(`/api/projects/${p.id}`);
-									void refresh();
+									void refresh(true);
 								}}
 							>
 								Delete

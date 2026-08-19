@@ -68,8 +68,8 @@ export function CronPage(): React.ReactElement {
 	const [editCron, setEditCron] = useState("");
 	const [err, setErr] = useState("");
 
-	const refresh = async () => {
-		setLoading(true);
+	const refresh = async (silent = false) => {
+		if (!silent) setLoading(true);
 		try {
 			const [j, r, p, s] = await Promise.all([
 				apiGet("/api/cron/jobs"),
@@ -90,7 +90,7 @@ export function CronPage(): React.ReactElement {
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 
 	const preview = useMemo(() => {
 		if (trigger === "webhook" || !cron.trim()) return "";
@@ -159,7 +159,7 @@ export function CronPage(): React.ReactElement {
 			setPrompt("");
 			setScript("");
 			setScriptArgs("");
-			void refresh();
+			void refresh(true);
 		} catch (e) {
 			setErr(String(e));
 		}
@@ -397,7 +397,7 @@ export function CronPage(): React.ReactElement {
 													prompt: editPrompt,
 												});
 												setEditing(null);
-												void refresh();
+												void refresh(true);
 											}}
 										>
 											Save
@@ -470,7 +470,7 @@ export function CronPage(): React.ReactElement {
 														`/api/cron/jobs/${j.id}/rotate-token`,
 														{},
 													);
-													void refresh();
+													void refresh(true);
 												}}
 											>
 												Rotate
@@ -495,7 +495,7 @@ export function CronPage(): React.ReactElement {
 											await apiPatch(`/api/cron/jobs/${j.id}`, {
 												enabled: j.enabled ? 0 : 1,
 											});
-											void refresh();
+											void refresh(true);
 										}}
 									>
 										{j.enabled ? "Disable" : "Enable"}
@@ -505,7 +505,7 @@ export function CronPage(): React.ReactElement {
 										className="btn btn-primary"
 										onClick={async () => {
 											await apiPost(`/api/cron/jobs/${j.id}/trigger`, {});
-											setTimeout(() => void refresh(), 1500);
+											setTimeout(() => void refresh(true), 1500);
 										}}
 									>
 										Run now
@@ -524,7 +524,7 @@ export function CronPage(): React.ReactElement {
 										onClick={async () => {
 											if (!confirm(`Delete job "${j.name}"?`)) return;
 											await apiDelete(`/api/cron/jobs/${j.id}`);
-											void refresh();
+											void refresh(true);
 										}}
 									>
 										Delete

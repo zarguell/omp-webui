@@ -111,7 +111,7 @@ export function TerminalPage(): React.ReactElement {
 					>
 						New
 					</button>
-					<button type="button" className="btn" onClick={() => void refresh()}>
+					<button type="button" className="btn" onClick={() => void refresh(true)}>
 						Refresh
 					</button>
 				</div>
@@ -160,7 +160,7 @@ export function TerminalPage(): React.ReactElement {
 									if (!confirm(`Kill terminal ${t.id.slice(0, 8)}?`)) return;
 									await apiDelete(`/api/terminals/${t.id}`);
 									if (activeId === t.id) setActiveId(null);
-									void refresh();
+									void refresh(true);
 								}}
 							>
 								×
