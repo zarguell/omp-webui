@@ -208,7 +208,7 @@ textarea::placeholder {
 .shell {
 	display: grid;
 	grid-template-columns: 220px 1fr;
-	min-height: 100dvh;
+	min-height: 100svh;
 }
 .shell nav {
 	background: var(--surface);
@@ -216,7 +216,7 @@ textarea::placeholder {
 	padding: var(--space-4);
 	position: sticky;
 	top: 0;
-	height: 100dvh;
+	height: 100svh;
 	overflow: auto;
 }
 .shell main {

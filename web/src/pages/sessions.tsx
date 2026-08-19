@@ -254,7 +254,7 @@ export function SessionsPage({
 			style={{
 				display: "flex",
 				flexDirection: "column",
-				height: "calc(100dvh - 32px)",
+				height: "calc(100svh - 32px)",
 				maxWidth: "none",
 			}}
 		>
@@ -342,7 +342,7 @@ export function SessionsPage({
 					</div>
 
 					{/* Follow-up input */}
-					<div style={{ display: "flex", gap: 8, marginTop: 8, flexShrink: 0 }}>
+					<div style={{ display: "flex", gap: 8, marginTop: 8, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom, 8px)" }}>
 						<input
 							aria-label="Follow-up"
 							placeholder={rpcStatus === "closed" ? "Session ended — open from history to resume" : "Type a follow-up…"}

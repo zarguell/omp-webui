@@ -125,7 +125,7 @@ export function TerminalView({
 				if (resizeTimer) clearTimeout(resizeTimer);
 				resizeTimer = setTimeout(() => {
 					if (fitAddon && !disposed) fitAndResize(fitAddon, ws);
-				}, 50);
+				}, 150);
 			});
 			ro.observe(containerRef.current);
 		};
