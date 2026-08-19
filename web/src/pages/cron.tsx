@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import cronstrue from "cronstrue";
 import { apiDelete, apiGet, apiPatch, apiPost } from "../lib/api";
 
 export function CronPage(): React.ReactElement {
@@ -27,14 +28,12 @@ export function CronPage(): React.ReactElement {
 
 	const preview = useMemo(() => {
 		try {
-			const cronstrue = require("cronstrue") as { toString(s: string): string };
 			return cronstrue.toString(cron);
 		} catch { return ""; }
 	}, [cron]);
 
 	const editPreview = useMemo(() => {
 		try {
-			const cronstrue = require("cronstrue") as { toString(s: string): string };
 			return editCron ? cronstrue.toString(editCron) : "";
 		} catch { return ""; }
 	}, [editCron]);
