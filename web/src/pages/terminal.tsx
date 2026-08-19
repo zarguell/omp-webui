@@ -15,7 +15,12 @@ export function TerminalPage(): React.ReactElement {
 	const refresh = async (silent = false) => {
 		if (!silent) setLoading(true);
 		try {
-			setTerminals((await apiGet("/api/terminals")) as typeof terminals);
+			const next = (await apiGet("/api/terminals")) as typeof terminals;
+			setTerminals(prev => {
+				const nextIds = next.map(t => t.id).join(",");
+				const prevIds = prev.map(t => t.id).join(",");
+				return nextIds === prevIds ? prev : next;
+			});
 		} catch {
 		} finally {
 			setLoading(false);
@@ -23,11 +28,11 @@ export function TerminalPage(): React.ReactElement {
 	};
 	useEffect(() => {
 		void refresh();
-	}, [refresh]);
+	}, []);
 	useEffect(() => {
 		const t = setInterval(() => void refresh(true), 3000);
 		return () => clearInterval(t);
-	}, [refresh]);
+	}, []);
 
 	const create = async () => {
 		const res = (await apiPost("/api/terminals", {
