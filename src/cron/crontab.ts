@@ -24,12 +24,13 @@ function renderCrontabLine(job: CrontabJob, webuiPort: number, bindHost: string)
 
 export function writeCrontab(db: Database, crontabPath: string, webuiPort: number, bindHost: string): void {
 	const jobs = db
-		.prepare("SELECT id, cron_expr, enabled FROM jobs WHERE enabled = 1 ORDER BY id")
+		.prepare(`SELECT id, cron_expr, enabled, "trigger" FROM jobs WHERE enabled = 1 ORDER BY id`)
 		.all() as CrontabJob[];
-	for (const job of jobs) validateCron(job.cron_expr);
+	const scheduled = jobs.filter(j => j.cron_expr.trim() !== "");
+	for (const job of scheduled) validateCron(job.cron_expr);
 
 	const lines = ["# omp-webui managed — do not edit manually", ""];
-	for (const job of jobs) {
+	for (const job of scheduled) {
 		lines.push(renderCrontabLine(job, webuiPort, bindHost));
 	}
 	lines.push("");

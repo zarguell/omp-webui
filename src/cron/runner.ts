@@ -15,6 +15,12 @@ interface JobRow {
 	project_id: string | null;
 	cwd: string | null;
 	enabled: number;
+	kind: string | null;
+	script_source: string | null;
+	script: string | null;
+	script_args: string | null;
+	trigger: string | null;
+	webhook_token: string | null;
 }
 
 interface ProjectRow {
@@ -28,12 +34,45 @@ function truncate(text: string, max: number): string {
 	return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
 }
 
+function lookupPath(obj: unknown, path: string): unknown {
+	let cur: unknown = obj;
+	for (const part of path.split(".")) {
+		if (cur === null || typeof cur !== "object") return undefined;
+		cur = (cur as Record<string, unknown>)[part];
+	}
+	return cur;
+}
+
+function stringifyValue(v: unknown): string {
+	if (v === null || v === undefined) return "";
+	if (typeof v === "object") return JSON.stringify(v);
+	return String(v);
+}
+
+export function interpolateTemplate(tpl: string, body: unknown, headers: Record<string, string>): string {
+	return tpl.replace(/\{\{\s*(payload|headers)\.([^}\s]+)\s*\}\}|\{\{\s*payload\s*\}\}/g, (whole, prefix: string | undefined, path: string | undefined) => {
+		if (prefix === "headers" && path !== undefined) {
+			const lower = path.toLowerCase();
+			for (const [k, v] of Object.entries(headers)) {
+				if (k.toLowerCase() === lower) return v;
+			}
+			return "";
+		}
+		if (prefix === "payload" && path !== undefined) {
+			const v = lookupPath(body, path);
+			return v === undefined ? "" : stringifyValue(v);
+		}
+		return body === null || body === undefined ? "" : JSON.stringify(body);
+	});
+}
+
 export async function runJob(
 	db: Database,
 	masterKeyPath: string,
 	agentDir: string,
 	jobId: string,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
+	interpolate?: (prompt: string) => string,
 ): Promise<{ runId: string; status: string }> {
 	const job = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as JobRow | undefined;
 	if (!job) throw new Error(`Job ${jobId} not found`);
@@ -73,8 +112,21 @@ export async function runJob(
 	);
 
 	const env = buildInjectedEnv(db, masterKeyPath, agentDir);
-	const args = ["--mode", "json", "-p", job.prompt, "--cwd", cwd];
-	if (model) args.push("--model", model);
+	let argv: string[];
+	if (job.kind === "script") {
+		const scriptArgs = JSON.parse(job.script_args ?? "[]") as string[];
+		if (job.script_source === "file") {
+			argv = ["bash", job.script ?? "", ...scriptArgs];
+		} else {
+			const inline = interpolate ? interpolate(job.script ?? "") : (job.script ?? "");
+			argv = ["bash", "-c", inline, "--", ...scriptArgs];
+		}
+	} else {
+		const prompt = interpolate ? interpolate(job.prompt) : job.prompt;
+		const args = ["--mode", "json", "-p", prompt, "--cwd", cwd];
+		if (model) args.push("--model", model);
+		argv = ["omp", ...args];
+	}
 
 	let output = "";
 	let exitCode: number | null = null;
@@ -82,7 +134,7 @@ export async function runJob(
 	let status: "success" | "error" = "success";
 
 	try {
-		const proc = Bun.spawn(["omp", ...args], {
+		const proc = Bun.spawn(argv, {
 			env,
 			stdout: "pipe",
 			stderr: "pipe",

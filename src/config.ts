@@ -9,6 +9,7 @@ export interface WebuiConfig {
 	masterKeyPath: string;
 	port: number;
 	bind: string;
+	webhookPort: number;
 }
 
 function localDataDir(): string {
@@ -34,6 +35,7 @@ function localDataDir(): string {
 export function getConfig(): WebuiConfig {
 	const dataDir = localDataDir();
 	const port = Number.parseInt(process.env.OMP_WEBUI_PORT ?? process.env.PORT ?? "8787", 10);
+	const webhookPort = Number.parseInt(process.env.OMP_WEBUI_WEBHOOK_PORT ?? "8788", 10);
 	const bind = process.env.OMP_WEBUI_BIND ?? "127.0.0.1";
 	return {
 		dataDir,
@@ -43,5 +45,6 @@ export function getConfig(): WebuiConfig {
 		masterKeyPath: process.env.MASTER_KEY_PATH ?? path.join(dataDir, "keys", "master.key"),
 		port: Number.isNaN(port) ? 8787 : port,
 		bind,
+		webhookPort: Number.isNaN(webhookPort) ? 8788 : webhookPort,
 	};
 }

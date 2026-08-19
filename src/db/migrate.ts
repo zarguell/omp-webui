@@ -50,6 +50,24 @@ export function migrate(db: Database): void {
 	if (!hasColumn(db, "projects", "default_model")) {
 		db.run("ALTER TABLE projects ADD COLUMN default_model TEXT");
 	}
+	if (!hasColumn(db, "jobs", "kind")) {
+		db.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'prompt'");
+	}
+	if (!hasColumn(db, "jobs", "script_source")) {
+		db.run("ALTER TABLE jobs ADD COLUMN script_source TEXT");
+	}
+	if (!hasColumn(db, "jobs", "script")) {
+		db.run("ALTER TABLE jobs ADD COLUMN script TEXT");
+	}
+	if (!hasColumn(db, "jobs", "script_args")) {
+		db.run("ALTER TABLE jobs ADD COLUMN script_args TEXT");
+	}
+	if (!hasColumn(db, "jobs", "trigger")) {
+		db.run(`ALTER TABLE jobs ADD COLUMN "trigger" TEXT NOT NULL DEFAULT 'schedule'`);
+	}
+	if (!hasColumn(db, "jobs", "webhook_token")) {
+		db.run("ALTER TABLE jobs ADD COLUMN webhook_token TEXT");
+	}
 }
 
 function hasColumn(db: Database, table: string, column: string): boolean {

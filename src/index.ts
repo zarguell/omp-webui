@@ -8,6 +8,7 @@ import { buildInjectedEnv } from "./secrets/env";
 import { getSessionFile, listSessions } from "./sessions/listing";
 import { getRpcSession, killAllRpcSessions, spawnOmpRpc } from "./sessions/spawn";
 import { streamSessionFile } from "./sessions/stream";
+import { startWebhookServer } from "./webhooks/server";
 import {
 	attachWs,
 	createTerminal,
@@ -45,6 +46,14 @@ async function parseJson(req: Request): Promise<Record<string, unknown>> {
 
 function getSessionsRoot(): string {
 	return path.join(config.agentDir, "sessions");
+}
+
+function newWebhookToken(): string {
+	return crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+}
+
+function webhookPathFor(job: { id: string; trigger: string | null; webhook_token: string | null }): string | null {
+	return job.trigger === "webhook" && job.webhook_token ? `/hook/${job.id}/${job.webhook_token}` : null;
 }
 
 // Prevent concurrent resume/spawn for the same session ID
@@ -455,10 +464,10 @@ const server = Bun.serve({
 		if (pathname === "/api/settings" && method === "GET") {
 			try {
 				const cfgPath = path.join(config.agentDir, "config.yml");
-				if (!fs.existsSync(cfgPath)) return json({});
+				if (!fs.existsSync(cfgPath)) return json({ webhookPort: config.webhookPort });
 				const { YAML } = await import("bun");
 				const raw = YAML.parse(await Bun.file(cfgPath).text());
-				return json(raw ?? {});
+				return json({ ...(raw ?? {}), webhookPort: config.webhookPort });
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
@@ -557,38 +566,73 @@ const server = Bun.serve({
 		}
 
 		if (pathname === "/api/cron/jobs" && method === "GET") {
-			return json(db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all());
+			const rows = db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as {
+				id: string;
+				trigger: string | null;
+				webhook_token: string | null;
+			}[];
+			return json(rows.map(r => ({ ...r, webhookPath: webhookPathFor(r) })));
 		}
 		if (pathname === "/api/cron/jobs" && method === "POST") {
 			const body = await parseJson(req);
 			const name = String(body.name ?? "").trim();
 			const cron_expr = String(body.cron ?? body.cron_expr ?? "").trim();
 			const prompt = String(body.prompt ?? "").trim();
-			if (!name || !cron_expr || !prompt) return badRequest("name, cron, prompt required");
-			const { validateCronExpr } = await import("./cron/crontab");
-			try {
-				validateCronExpr(cron_expr);
-			} catch (e) {
-				return badRequest(String(e));
+			const kind = body.kind === "script" ? "script" : "prompt";
+			const trigger = body.trigger === "webhook" ? "webhook" : "schedule";
+			if (!name) return badRequest("name required");
+			if (kind === "script") {
+				const scriptSource = body.scriptSource === "file" ? "file" : body.scriptSource === "inline" ? "inline" : null;
+				if (!scriptSource) return badRequest("scriptSource must be 'inline' or 'file'");
+				if (typeof body.script !== "string" || !body.script.trim()) return badRequest("script required");
+				if (scriptSource === "file" && !fs.existsSync(path.resolve(body.script)))
+					return badRequest(`script file not found: ${body.script}`);
+			} else if (!prompt) {
+				return badRequest("prompt required");
+			}
+			if (Array.isArray(body.scriptArgs) && !body.scriptArgs.every(a => typeof a === "string"))
+				return badRequest("scriptArgs must be an array of strings");
+			if (trigger === "schedule" || cron_expr) {
+				if (!cron_expr) return badRequest("cron required for schedule trigger");
+				const { validateCronExpr } = await import("./cron/crontab");
+				try {
+					validateCronExpr(cron_expr);
+				} catch (e) {
+					return badRequest(String(e));
+				}
 			}
 			const id = Bun.randomUUIDv7();
 			const now = new Date().toISOString();
+			const webhookToken = trigger === "webhook" ? newWebhookToken() : null;
 			db.prepare(
-				"INSERT INTO jobs (id, name, cron_expr, prompt, model, project_id, cwd, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				`INSERT INTO jobs (id, name, cron_expr, prompt, model, project_id, cwd, enabled, created_at, updated_at,
+					kind, script_source, script, script_args, "trigger", webhook_token)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			).run(
 				id,
 				name,
 				cron_expr,
-				prompt,
+				kind === "script" ? "" : prompt,
 				body.model ? String(body.model) : null,
 				body.projectId ? String(body.projectId) : null,
 				body.cwd ? String(body.cwd) : null,
 				body.enabled === false ? 0 : 1,
 				now,
 				now,
+				kind,
+				kind === "script" ? (body.scriptSource === "file" ? "file" : "inline") : null,
+				kind === "script" ? String(body.script) : null,
+				kind === "script" && Array.isArray(body.scriptArgs) ? JSON.stringify(body.scriptArgs) : null,
+				trigger,
+				webhookToken,
 			);
 			syncCrontab();
-			return json(db.prepare("SELECT * FROM jobs WHERE id = ?").get(id), 201);
+			const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as {
+				id: string;
+				trigger: string | null;
+				webhook_token: string | null;
+			};
+			return json({ ...row, webhookPath: webhookPathFor(row), webhookToken: webhookToken }, 201);
 		}
 		const cronJobMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)$/);
 		if (cronJobMatch && method === "GET") {
@@ -598,10 +642,17 @@ const server = Bun.serve({
 		}
 		if (cronJobMatch && (method === "PATCH" || method === "PUT")) {
 			const body = await parseJson(req);
+			const jobId = cronJobMatch[1];
+			const current = db
+				.prepare(`SELECT id, "trigger", cron_expr, kind FROM jobs WHERE id = ?`)
+				.get(jobId) as { id: string; trigger: string; cron_expr: string; kind: string } | undefined;
+			if (!current) return notFound();
 			const fields: string[] = [];
 			const vals: unknown[] = [];
+			const newTrigger = body.trigger === "webhook" ? "webhook" : body.trigger === "schedule" ? "schedule" : current.trigger;
 			for (const k of ["name", "cron_expr", "prompt", "model", "project_id", "cwd", "enabled"]) {
-				const src = k === "cron_expr" ? (body.cron ?? body.cron_expr) : body[k];
+				let src = k === "cron_expr" ? (body.cron ?? body.cron_expr) : body[k];
+				if (k === "cron_expr" && newTrigger === "webhook" && body.trigger !== undefined) src = "";
 				if (src !== undefined) {
 					if (k === "cron_expr" && src) {
 						const { validateCronExpr } = await import("./cron/crontab");
@@ -615,24 +666,97 @@ const server = Bun.serve({
 					vals.push(k === "enabled" ? (src ? 1 : 0) : src === null ? null : String(src));
 				}
 			}
+			if (newTrigger === "schedule" && current.trigger === "webhook" && body.trigger !== undefined) {
+				const effectiveCron = String(body.cron ?? body.cron_expr ?? current.cron_expr ?? "").trim();
+				if (!effectiveCron) return badRequest("cron required when switching to schedule trigger");
+			}
+			if (body.trigger !== undefined) {
+				fields.push(`"trigger" = ?`);
+				vals.push(newTrigger);
+				if (newTrigger === "webhook" && current.trigger !== "webhook") {
+					fields.push("webhook_token = ?");
+					vals.push(newWebhookToken());
+				}
+			}
+			if (body.kind !== undefined) {
+				const kind = body.kind === "script" ? "script" : "prompt";
+				if (kind === "script") {
+					const scriptSource = body.scriptSource === "file" ? "file" : body.scriptSource === "inline" ? "inline" : null;
+					if (!scriptSource) return badRequest("scriptSource must be 'inline' or 'file'");
+					if (typeof body.script !== "string" || !body.script.trim()) return badRequest("script required");
+					if (scriptSource === "file" && !fs.existsSync(path.resolve(body.script)))
+						return badRequest(`script file not found: ${body.script}`);
+				}
+				fields.push("kind = ?");
+				vals.push(kind);
+			}
+			if (body.scriptSource !== undefined) {
+				if (body.scriptSource !== "inline" && body.scriptSource !== "file")
+					return badRequest("scriptSource must be 'inline' or 'file'");
+				fields.push("script_source = ?");
+				vals.push(String(body.scriptSource));
+			}
+			if (body.script !== undefined) {
+				fields.push("script = ?");
+				vals.push(String(body.script));
+			}
+			if (body.scriptArgs !== undefined) {
+				if (!Array.isArray(body.scriptArgs) || !body.scriptArgs.every(a => typeof a === "string"))
+					return badRequest("scriptArgs must be an array of strings");
+				fields.push("script_args = ?");
+				vals.push(JSON.stringify(body.scriptArgs));
+			}
 			if (fields.length === 0) return badRequest("nothing to update");
 			fields.push("updated_at = ?");
 			vals.push(new Date().toISOString());
-			vals.push(cronJobMatch[1]);
+			vals.push(jobId);
 			db.prepare(`UPDATE jobs SET ${fields.join(", ")} WHERE id = ?`).run(...(vals as never[]));
 			syncCrontab();
-			return json(db.prepare("SELECT * FROM jobs WHERE id = ?").get(cronJobMatch[1]));
+			const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as {
+				id: string;
+				trigger: string | null;
+				webhook_token: string | null;
+			};
+			return json({ ...row, webhookPath: webhookPathFor(row) });
 		}
 		if (cronJobMatch && method === "DELETE") {
 			db.prepare("DELETE FROM jobs WHERE id = ?").run(cronJobMatch[1]);
 			syncCrontab();
 			return json({ ok: true });
 		}
+		const rotateMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/rotate-token$/);
+		if (rotateMatch && method === "POST") {
+			const jobId = rotateMatch[1];
+			const row = db.prepare(`SELECT id, "trigger" FROM jobs WHERE id = ?`).get(jobId) as
+				| { id: string; trigger: string | null }
+				| undefined;
+			if (!row) return notFound();
+			if (row.trigger !== "webhook") return badRequest("job is not a webhook job");
+			const token = newWebhookToken();
+			db.prepare("UPDATE jobs SET webhook_token = ?, updated_at = ? WHERE id = ?").run(
+				token,
+				new Date().toISOString(),
+				jobId,
+			);
+			return json({ webhookToken: token, webhookPath: `/hook/${jobId}/${token}` });
+		}
 		const cronTriggerMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/trigger$/);
 		if (cronTriggerMatch && method === "POST") {
 			try {
-				const { runJob: runCronJob } = await import("./cron/runner");
-				const result = await runCronJob(db, config.masterKeyPath, config.agentDir, cronTriggerMatch[1]);
+				const body = await parseJson(req);
+				const { runJob: runCronJob, interpolateTemplate } = await import("./cron/runner");
+				const interpolate =
+					body.payload !== undefined
+						? (p: string) => interpolateTemplate(p, body.payload, {})
+						: undefined;
+				const result = await runCronJob(
+					db,
+					config.masterKeyPath,
+					config.agentDir,
+					cronTriggerMatch[1],
+					600_000,
+					interpolate,
+				);
 				return json(result);
 			} catch (e) {
 				return json({ error: String(e) }, 500);
@@ -851,15 +975,19 @@ console.log(
 	`omp-webui listening on http://${config.bind}:${config.port}  data=${path.dirname(config.dbPath)} agent=${config.agentDir}`,
 );
 
+const webhookServer = startWebhookServer({ db, config, masterKeyPath: config.masterKeyPath });
+
 process.on("SIGINT", () => {
 	killAllRpcSessions();
 	killAllTerminals();
 	server.stop();
+	webhookServer?.stop();
 	process.exit(0);
 });
 process.on("SIGTERM", () => {
 	killAllRpcSessions();
 	killAllTerminals();
 	server.stop();
+	webhookServer?.stop();
 	process.exit(0);
 });

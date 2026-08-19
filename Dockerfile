@@ -23,7 +23,7 @@ RUN bun run build
 
 FROM base AS runtime
 ARG SUPERCRONIC_VERSION
-ENV PI_CODING_AGENT_DIR=/data/agent OMP_WEBUI_DATA_DIR=/data OMP_WEBUI_PORT=8787 OMP_WEBUI_BIND=0.0.0.0 CRONTAB_PATH=/data/crontab MASTER_KEY_PATH=/data/keys/master.key
+ENV PI_CODING_AGENT_DIR=/data/agent OMP_WEBUI_DATA_DIR=/data OMP_WEBUI_PORT=8787 OMP_WEBUI_BIND=0.0.0.0 OMP_WEBUI_WEBHOOK_PORT=8788 CRONTAB_PATH=/data/crontab MASTER_KEY_PATH=/data/keys/master.key
 RUN ARCH=$(case "$(uname -m)" in x86_64) echo amd64;; aarch64) echo arm64;; *) echo amd64;; esac) \
  && curl -fsSL -o /usr/local/bin/supercronic https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH} \
  && chmod +x /usr/local/bin/supercronic && supercronic -h 2>&1 | head -5
@@ -31,5 +31,5 @@ COPY --from=builder /app/dist /app/dist
 COPY entrypoint.sh /usr/local/bin/omp-webui-entrypoint
 RUN chmod +x /usr/local/bin/omp-webui-entrypoint
 VOLUME ["/data"]
-EXPOSE 8787
+EXPOSE 8787 8788
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omp-webui-entrypoint"]
