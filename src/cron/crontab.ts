@@ -23,9 +23,10 @@ function renderCrontabLine(
 	job: CrontabJob,
 	webuiPort: number,
 	bindHost: string,
+	cronToken: string,
 ): string {
 	const host = bindHost === "0.0.0.0" ? "127.0.0.1" : bindHost;
-	return `${job.cron_expr} curl -sS -X POST http://${host}:${webuiPort}/internal/cron/trigger/${job.id} -H 'X-Job-Id: ${job.id}' >> /tmp/omp-webui-cron.log 2>&1`;
+	return `${job.cron_expr} curl -sS -X POST http://${host}:${webuiPort}/internal/cron/trigger/${job.id} -H 'X-Job-Id: ${job.id}' -H 'X-Cron-Token: ${cronToken}' >> /tmp/omp-webui-cron.log 2>&1`;
 }
 
 export function writeCrontab(
@@ -33,6 +34,7 @@ export function writeCrontab(
 	crontabPath: string,
 	webuiPort: number,
 	bindHost: string,
+	cronToken: string,
 ): void {
 	const jobs = db
 		.prepare(
@@ -44,7 +46,7 @@ export function writeCrontab(
 
 	const lines = ["# omp-webui managed — do not edit manually", ""];
 	for (const job of scheduled) {
-		lines.push(renderCrontabLine(job, webuiPort, bindHost));
+		lines.push(renderCrontabLine(job, webuiPort, bindHost, cronToken));
 	}
 	lines.push("");
 

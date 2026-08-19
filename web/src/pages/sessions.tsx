@@ -1,7 +1,10 @@
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSelect } from "../components/model-select";
+import { ApprovalDialog } from "../components/approval-dialog";
 import { apiGet, apiPost } from "../lib/api";
+import { useRpcWatcher } from "../hooks/use-rpc-watcher";
+import { useSessionStream } from "../lib/use-session-stream";
 
 type Session = {
 	id: string;
@@ -49,13 +52,10 @@ export function SessionsPage({
 	const [projectId, setProjectId] = useState("");
 	const [model, setModel] = useState("");
 	const [streamId, setStreamId] = useState<string | null>(null);
-	const [lines, setLines] = useState<string[]>([]);
+	const { lines, clear: clearStream } = useSessionStream(streamId);
+	const { rpcStatus, pendingApproval, respond } = useRpcWatcher(streamId);
 	const [followUp, setFollowUp] = useState("");
-	const [rpcStatus, setRpcStatus] = useState<
-		"idle" | "connecting" | "live" | "closed"
-	>("idle");
 	const streamRef = useRef<HTMLDivElement>(null);
-	const rpcRef = useRef<WebSocket | null>(null);
 	const pageSize = 20;
 	const [page, setPage] = useState(0);
 	const [historyOpen, setHistoryOpen] = useState(false);
@@ -106,10 +106,6 @@ export function SessionsPage({
 				model: model || undefined,
 			})) as { sessionId: string };
 			setStreamId(res.sessionId);
-			setLines([]);
-			setRpcStatus("connecting");
-			attachRpc(res.sessionId);
-			void openStream(res.sessionId);
 			void refresh(true);
 		} catch (e) {
 			setErr(String(e));
@@ -117,110 +113,16 @@ export function SessionsPage({
 		}
 	};
 
-	const abortRef = useRef<AbortController | null>(null);
-	const openStream = async (id: string) => {
-		abortRef.current?.abort();
-		rpcRef.current?.close();
-		setRpcStatus("idle");
-		const ac = new AbortController();
-		abortRef.current = ac;
-		setStreamId(id);
-		setLines([]);
-		try {
-			const res = await fetch(
-				`/api/sessions/${encodeURIComponent(id)}/stream`,
-				{ signal: ac.signal },
-			);
-			if (!res.body) return;
-			const reader = res.body.getReader();
-			const decoder = new TextDecoder();
-			let buf = "";
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				buf += decoder.decode(value, { stream: true });
-				const parts = buf.split("\n\n");
-				buf = parts.pop() ?? "";
-				for (const part of parts) {
-					if (part.startsWith(":")) continue;
-					const line = part.startsWith("data: ") ? part.slice(6) : part;
-					if (line && !line.startsWith("event:"))
-						setLines((s) => [...s, line].slice(-2000));
-				}
-			}
-		} catch (e) {
-			if ((e as Error).name !== "AbortError") setErr(String(e));
-		}
-	};
-
-	const attachRpc = (id: string) => {
-		rpcRef.current?.close();
-		setRpcStatus("connecting");
-		const proto = location.protocol === "https:" ? "wss:" : "ws:";
-		const ws = new WebSocket(
-			`${proto}//${location.host}/api/sessions/${id}/ws`,
-		);
-		rpcRef.current = ws;
-		ws.onopen = () => setRpcStatus("live");
-		ws.onclose = () => setRpcStatus((s) => (s === "live" ? "closed" : s));
-		ws.onerror = () => setRpcStatus("closed");
-		ws.onmessage = (ev) => {
-			try {
-				const msg = JSON.parse(
-					typeof ev.data === "string"
-						? ev.data
-						: new TextDecoder().decode(ev.data as ArrayBuffer),
-				);
-				if (msg.type === "rpc" && typeof msg.data === "string") {
-					try {
-						const inner = JSON.parse(msg.data);
-						if (inner.type === "exit") setRpcStatus("closed");
-						else if (inner.type) setLines((s) => [...s, msg.data].slice(-2000));
-						else setLines((s) => [...s, msg.data].slice(-2000));
-					} catch {
-						setLines((s) => [...s, msg.data].slice(-2000));
-					}
-				}
-			} catch {}
-		};
-		return ws;
-	};
-
 	const openSession = async (id: string, status?: string) => {
-		abortRef.current?.abort();
-		rpcRef.current?.close();
 		setStreamId(id);
-		setLines([]);
-		if (status === "complete" || status === "error") {
-			setRpcStatus("closed");
-			void openStream(id);
-			return;
-		}
-		setRpcStatus("connecting");
+		clearStream();
+		if (status === "complete" || status === "error") return;
 		try {
-			const res = (await apiPost("/api/sessions", { resume: id })) as {
-				sessionId: string;
-				rpcLive?: boolean;
-			};
-			if (res.rpcLive) {
-				attachRpc(res.sessionId);
-			} else {
-				setRpcStatus("closed");
-			}
+			await apiPost("/api/sessions", { resume: id });
 		} catch (e) {
 			setErr(String(e));
-			setRpcStatus("closed");
 		}
-		void openStream(id);
 	};
-
-	useEffect(
-		() => () => {
-			abortRef.current?.abort();
-			rpcRef.current?.close();
-		},
-		[],
-	);
 
 	const sendFollowUp = async () => {
 		if (!streamId || !followUp.trim()) return;
@@ -233,11 +135,8 @@ export function SessionsPage({
 	};
 
 	const newChat = () => {
-		abortRef.current?.abort();
-		rpcRef.current?.close();
 		setStreamId(null);
-		setLines([]);
-		setRpcStatus("idle");
+		clearStream();
 		setFollowUp("");
 	};
 
@@ -340,6 +239,11 @@ export function SessionsPage({
 							</div>
 						)}
 					</div>
+
+					{/* Approval dialog */}
+					{pendingApproval && (
+						<ApprovalDialog pending={pendingApproval} respond={respond} />
+					)}
 
 					{/* Follow-up input */}
 					<div style={{ display: "flex", gap: 8, marginTop: 8, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom, 8px)" }}>
@@ -587,7 +491,7 @@ export function SessionsPage({
 									<button
 										type="button"
 										className="btn btn-ghost"
-										onClick={() => void openStream(s.id)}
+										onClick={() => { setStreamId(s.id); clearStream(); }}
 										style={{ fontSize: "var(--text-xs)", padding: "4px 8px" }}
 									>
 										Preview

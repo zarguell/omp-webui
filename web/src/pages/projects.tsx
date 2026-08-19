@@ -1,14 +1,15 @@
 import type React from "react";
 import { useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPost } from "../lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost } from "../lib/api";
 
 export function ProjectsPage(): React.ReactElement {
 	const [projects, setProjects] = useState<
-		{ id: string; name: string; cwd: string; default_model?: string | null }[]
+		{ id: string; name: string; cwd: string; default_model?: string | null; approval_mode?: string | null }[]
 	>([]);
 	const [loading, setLoading] = useState(true);
 	const [name, setName] = useState("");
 	const [cwd, setCwd] = useState("");
+	const [approvalMode, setApprovalMode] = useState("");
 	const [err, setErr] = useState("");
 
 	const refresh = async (silent = false) => {
@@ -72,6 +73,27 @@ export function ProjectsPage(): React.ReactElement {
 						onChange={(e) => setCwd(e.target.value)}
 					/>
 				</label>
+				<label style={{ flex: "1 1 140px", display: "grid", gap: 4 }}>
+					<span
+						style={{
+							fontSize: "var(--text-xs)",
+							color: "var(--muted)",
+							fontWeight: 600,
+						}}
+					>
+						Approval
+					</span>
+					<select
+						aria-label="Approval mode"
+						value={approvalMode}
+						onChange={(e) => setApprovalMode(e.target.value)}
+					>
+						<option value="">Default</option>
+						<option value="always-ask">always-ask</option>
+						<option value="write">write</option>
+						<option value="yolo">yolo</option>
+					</select>
+				</label>
 				<button
 					type="button"
 					className="btn btn-primary"
@@ -79,9 +101,14 @@ export function ProjectsPage(): React.ReactElement {
 					onClick={async () => {
 						setErr("");
 						try {
-							await apiPost("/api/projects", { name, cwd });
+							await apiPost("/api/projects", {
+								name,
+								cwd,
+								approval_mode: approvalMode || undefined,
+							});
 							setName("");
 							setCwd("");
+							setApprovalMode("");
 							void refresh(true);
 						} catch (e) {
 							setErr(String(e));
@@ -135,6 +162,11 @@ export function ProjectsPage(): React.ReactElement {
 								</span>{" "}
 								{p.default_model ? (
 									<span className="badge">{p.default_model}</span>
+								) : null}
+								{p.approval_mode ? (
+									<span className="badge" style={{ borderColor: "var(--warning)" }}>
+										{p.approval_mode}
+									</span>
 								) : null}
 							</span>
 							<button

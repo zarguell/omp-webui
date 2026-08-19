@@ -1,7 +1,10 @@
 import { marked } from "marked";
-import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApprovalDialog } from "../components/approval-dialog";
 import { apiGet, apiPost } from "../lib/api";
+import { useRpcWatcher } from "../hooks/use-rpc-watcher";
+import { useSessionStream } from "../lib/use-session-stream";
 
 type ChatMessage = {
 	role: "user" | "assistant" | "system";
@@ -123,8 +126,7 @@ function parseMessages(lines: string[]): ChatMessage[] {
 	}
 
 	const msgs: ChatMessage[] = [];
-	let id = 0;
-	for (const line of lines) {
+	for (const [lineIndex, line] of lines.entries()) {
 		try {
 			const obj = JSON.parse(line);
 			const entry = obj.entry ?? obj;
@@ -145,7 +147,7 @@ function parseMessages(lines: string[]): ChatMessage[] {
 					msgs.push({
 						role: "assistant",
 						text: textParts.join("\n\n"),
-						id: id++,
+						id: lineIndex,
 					});
 					continue;
 				}
@@ -157,7 +159,7 @@ function parseMessages(lines: string[]): ChatMessage[] {
 							role: "system",
 							text: summarizeToolCall(part.name, args, startData),
 							detail: formatToolDetail(part.name, args),
-							id: id++,
+							id: lineIndex,
 						});
 					}
 				}
@@ -174,14 +176,14 @@ function parseMessages(lines: string[]): ChatMessage[] {
 					msgs.push({
 						role: "system",
 						text: preview + (text.split("\n").length > 8 ? "\n…" : ""),
-						id: id++,
+						id: lineIndex,
 					});
 				}
 				continue;
 			}
 
 			if (msg?.role === "user" && typeof msg.content === "string") {
-				msgs.push({ role: "user", text: msg.content, id: id++ });
+				msgs.push({ role: "user", text: msg.content, id: lineIndex });
 				continue;
 			}
 
@@ -194,7 +196,7 @@ function parseMessages(lines: string[]): ChatMessage[] {
 					msgs.push({
 						role: msg.role === "user" ? "user" : "assistant",
 						text,
-						id: id++,
+						id: lineIndex,
 					});
 					continue;
 				}
@@ -204,7 +206,7 @@ function parseMessages(lines: string[]): ChatMessage[] {
 				msgs.push({
 					role: msg.role === "user" ? "user" : "assistant",
 					text: msg.content,
-					id: id++,
+					id: lineIndex,
 				});
 			}
 		} catch {
@@ -277,8 +279,12 @@ function CopyButton({ text }: { text: string }) {
 	);
 }
 
-function MarkdownMessage({ text }: { text: string }): React.ReactElement {
-	const html = marked.parse(text, { async: false }) as string;
+const MarkdownMessage = React.memo(function MarkdownMessage({
+	text,
+}: {
+	text: string;
+}): React.ReactElement {
+	const html = useMemo(() => marked.parse(text, { async: false }) as string, [text]);
 	return (
 		<div
 			className="markdown-body"
@@ -286,7 +292,7 @@ function MarkdownMessage({ text }: { text: string }): React.ReactElement {
 			style={{ fontSize: "var(--text-sm)", lineHeight: 1.6 }}
 		/>
 	);
-}
+});
 
 function UserMessage({ text }: { text: string }): React.ReactElement {
 	return (
@@ -401,7 +407,13 @@ function SystemMessage({
 	);
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }): React.ReactElement {
+const MessageBubble = React.memo(function MessageBubble({
+	msg,
+	isStreamingTail,
+}: {
+	msg: ChatMessage;
+	isStreamingTail?: boolean;
+}): React.ReactElement {
 	const isSystemTool =
 		msg.role === "system" &&
 		(msg.text.startsWith("→") || msg.text.startsWith("$"));
@@ -483,7 +495,19 @@ function MessageBubble({ msg }: { msg: ChatMessage }): React.ReactElement {
 				<CopyButton text={msg.text} />
 			</div>
 			{msg.role === "assistant" ? (
-				<MarkdownMessage text={msg.text} />
+				isStreamingTail ? (
+					<div
+						style={{
+							whiteSpace: "pre-wrap",
+							fontSize: "var(--text-sm)",
+							lineHeight: 1.6,
+						}}
+					>
+						{msg.text}
+					</div>
+				) : (
+					<MarkdownMessage text={msg.text} />
+				)
 			) : msg.role === "user" ? (
 				<UserMessage text={msg.text} />
 			) : (
@@ -491,7 +515,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }): React.ReactElement {
 			)}
 		</div>
 	);
-}
+});
 
 export function ChatPage({
 	sessionId,
@@ -500,51 +524,34 @@ export function ChatPage({
 	sessionId: string;
 	onBack: () => void;
 }): React.ReactElement {
-	const [lines, setLines] = useState<string[]>([]);
-	const [status, setStatus] = useState<"loading" | "streaming" | "done">(
-		"loading",
-	);
+	const { lines, status, resetCount } = useSessionStream(sessionId);
+	const { rpcStatus, pendingApproval, respond } = useRpcWatcher(sessionId);
 	const [title, setTitle] = useState("");
 	const [model, setModel] = useState("");
 	const [availableModels, setAvailableModels] = useState<
 		{ selector: string; name: string; provider: string }[]
 	>([]);
 	const [followUp, setFollowUp] = useState("");
-	const abortRef = useRef<AbortController | null>(null);
-	const rpcRef = useRef<WebSocket | null>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const stickyRef = useRef(true);
 
-	// Auto-scroll
+	// Track scroll stickiness
 	useEffect(() => {
-		if (scrollRef.current) {
-			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-		}
+		const el = scrollRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			stickyRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		};
+		el.addEventListener("scroll", onScroll, { passive: true });
+		return () => el.removeEventListener("scroll", onScroll);
 	}, []);
 
-	// Spawn RPC session for interactive prompts
+	// Auto-scroll only when sticky
 	useEffect(() => {
-		let active = true;
-		void apiPost("/api/sessions", { resume: sessionId })
-			.then((res: unknown) => {
-				if (!active) return;
-				const d = res as { sessionId?: string; rpcLive?: boolean };
-				if (d.rpcLive && d.sessionId) {
-					const proto = location.protocol === "https:" ? "wss:" : "ws:";
-					const ws = new WebSocket(
-						`${proto}//${location.host}/api/sessions/${d.sessionId}/ws`,
-					);
-					rpcRef.current = ws;
-					ws.onopen = () => {};
-					ws.onclose = () => {};
-					ws.onerror = () => {};
-					ws.onmessage = () => {};
-				}
-			})
-			.catch(() => {});
-		return () => {
-			active = false;
-		};
-	}, [sessionId]);
+		if (stickyRef.current && scrollRef.current) {
+			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+		}
+	}, [lines.length, resetCount]);
 
 	// Fetch available models and session model
 	useEffect(() => {
@@ -571,75 +578,22 @@ export function ChatPage({
 			.catch(() => {});
 	}, [sessionId]);
 
-	// Stream SSE with auto-reconnect
+	// Extract title/model from streaming lines
+	const prevLenRef = useRef(0);
 	useEffect(() => {
-		let active = true;
-		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-		const connect = () => {
-			if (!active) return;
-			const ac = new AbortController();
-			abortRef.current = ac;
-
-			fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
-				signal: ac.signal,
-			})
-				.then((res) => {
-					if (!res.body || !active) return;
-					setStatus("streaming");
-					const reader = res.body.getReader();
-					const decoder = new TextDecoder();
-					let buf = "";
-					const pump = (): Promise<void> =>
-						reader.read().then(({ value, done }) => {
-							if (done || !active) {
-								setStatus("done");
-								return;
-							}
-							buf += decoder.decode(value, { stream: true });
-							const parts = buf.split("\n\n");
-							buf = parts.pop() ?? "";
-							for (const part of parts) {
-								if (part.startsWith(":")) continue;
-								const dataLine = part.startsWith("data: ")
-									? part.slice(6)
-									: part;
-								if (!dataLine || dataLine.startsWith("event:")) continue;
-								try {
-									const obj = JSON.parse(dataLine);
-									if (obj.type === "title" && obj.title) setTitle(obj.title);
-									if (obj.type === "model_change" && obj.model)
-										setModel(obj.model);
-								} catch {}
-								if (active) setLines((s) => [...s, dataLine]);
-							}
-							return pump();
-						});
-					return pump();
-				})
-				.catch((e) => {
-					if ((e as Error).name === "AbortError" || !active) return;
-					// Reconnect after 2s on error
-					if (active) reconnectTimer = setTimeout(connect, 2000);
-				});
-		};
-		connect();
-
-		return () => {
-			active = false;
-			if (reconnectTimer) clearTimeout(reconnectTimer);
-			abortRef.current?.abort();
-		};
-	}, [sessionId]);
-
-	// Cleanup on unmount
-	useEffect(
-		() => () => {
-			abortRef.current?.abort();
-			rpcRef.current?.close();
-		},
-		[],
-	);
+		if (lines.length <= prevLenRef.current) {
+			prevLenRef.current = lines.length;
+			return;
+		}
+		for (let i = prevLenRef.current; i < lines.length; i++) {
+			try {
+				const obj = JSON.parse(lines[i]);
+				if (obj.type === "title" && obj.title) setTitle(obj.title);
+				if (obj.type === "model_change" && obj.model) setModel(obj.model);
+			} catch {}
+		}
+		prevLenRef.current = lines.length;
+	}, [lines, resetCount]);
 
 	const sendFollowUp = useCallback(async () => {
 		if (!followUp.trim()) return;
@@ -660,7 +614,34 @@ export function ChatPage({
 		[sessionId],
 	);
 
-	const messages = parseMessages(lines);
+	const messages = useMemo(() => parseMessages(lines), [lines, resetCount]);
+
+	// Windowing: render last WINDOW messages, load more on scroll
+	const WINDOW = 50;
+	const [extra, setExtra] = useState(0);
+	const sentinelRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		setExtra(0);
+	}, [sessionId]);
+
+	useEffect(() => {
+		const el = sentinelRef.current;
+		if (!el) return;
+		if (messages.length <= WINDOW + extra) return;
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				if (entry.isIntersecting) setExtra((e) => e + WINDOW);
+			},
+			{ threshold: 0 },
+		);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [messages.length, extra]);
+
+	const visible = messages.slice(
+		Math.max(0, messages.length - WINDOW - extra),
+	);
 
 	return (
 		<div
@@ -767,10 +748,26 @@ export function ChatPage({
 						No messages in this session.
 					</div>
 				)}
-				{messages.map((msg) => (
-					<MessageBubble key={msg.id} msg={msg} />
+				{messages.length > WINDOW + extra && (
+					<div ref={sentinelRef} style={{ height: 4 }} />
+				)}
+				{visible.map((msg: ChatMessage, idx: number) => (
+					<MessageBubble
+						key={msg.id}
+						msg={msg}
+						isStreamingTail={
+							status === "streaming" &&
+							idx === visible.length - 1 &&
+							msg.role === "assistant"
+						}
+					/>
 				))}
 			</div>
+
+			{/* Approval dialog */}
+			{pendingApproval && (
+				<ApprovalDialog pending={pendingApproval} respond={respond} />
+			)}
 
 			{/* Follow-up input */}
 			<div

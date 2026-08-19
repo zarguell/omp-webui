@@ -46,14 +46,12 @@ function deriveStatus(tail: string): string | undefined {
 	}
 }
 
-export function listSessions(
-	sessionsRoot: string,
-	projectCwd?: string,
-	opts?: { limit?: number; offset?: number },
-): { sessions: SessionSummary[]; total: number } {
-	if (!fs.existsSync(sessionsRoot)) return { sessions: [], total: 0 };
-	const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 200);
-	const offset = Math.max(opts?.offset ?? 0, 0);
+/**
+ * Full filesystem walk of sessionsRoot — no paging, no project filter.
+ * Returns up to 5000 summaries sorted by modified descending.
+ */
+export function scanAllSessions(sessionsRoot: string): SessionSummary[] {
+	if (!fs.existsSync(sessionsRoot)) return [];
 	const MAX_FILE_SIZE = 32 * 1024 * 1024;
 	const BIG_FILE_WARN = 10 * 1024 * 1024;
 	const results: SessionSummary[] = [];
@@ -104,12 +102,6 @@ export function listSessions(
 						}
 					})();
 					const header = parseSessionHeader(head);
-					if (
-						projectCwd &&
-						header.cwd &&
-						path.resolve(header.cwd) !== path.resolve(projectCwd)
-					)
-						continue;
 					const messageCount = tail
 						? tail.split("\n").filter(Boolean).length
 						: 0;
@@ -131,23 +123,48 @@ export function listSessions(
 		}
 	}
 
-	if (projectCwd) {
-		const encoded = encodeSessionDir(projectCwd);
-		const projectDir = path.join(sessionsRoot, encoded);
-		if (fs.existsSync(projectDir)) scanDir(projectDir);
-		for (const p of results) if (!p.cwd) p.cwd = projectCwd;
-		if (results.length === 0) scanDir(sessionsRoot);
-	} else {
-		scanDir(sessionsRoot);
-	}
-
+	scanDir(sessionsRoot);
 	results.sort((a, b) => b.modified.localeCompare(a.modified));
 	if (skippedBig > 0)
 		console.warn(
 			`Skipped ${skippedBig} sessions > ${MAX_FILE_SIZE / 1024 / 1024} MB`,
 		);
-	const total = results.length;
-	return { sessions: results.slice(offset, offset + limit), total };
+	return results;
+}
+
+export function listSessions(
+	sessionsRoot: string,
+	projectCwd?: string,
+	opts?: { limit?: number; offset?: number },
+): { sessions: SessionSummary[]; total: number } {
+	if (!fs.existsSync(sessionsRoot)) return { sessions: [], total: 0 };
+	const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 200);
+	const offset = Math.max(opts?.offset ?? 0, 0);
+
+	let all = scanAllSessions(sessionsRoot);
+
+	if (projectCwd) {
+		const resolved = path.resolve(projectCwd);
+		all = all.filter((s) => s.cwd && path.resolve(s.cwd) === resolved);
+		if (all.length === 0) {
+			// Fallback: scan project-specific directory (original behavior)
+			all = scanAllSessions(sessionsRoot);
+			const encoded = encodeSessionDir(projectCwd);
+			const projectDir = path.join(sessionsRoot, encoded);
+			if (fs.existsSync(projectDir)) {
+				const projectResults = scanAllSessions(projectDir);
+				all = projectResults.length > 0
+					? projectResults
+					: all.filter((s) => !s.cwd || path.resolve(s.cwd) === resolved);
+			} else {
+				all = all.filter((s) => !s.cwd || path.resolve(s.cwd) === resolved);
+			}
+			for (const p of all) if (!p.cwd) p.cwd = projectCwd;
+		}
+	}
+
+	const total = all.length;
+	return { sessions: all.slice(offset, offset + limit), total };
 }
 
 function encodeSessionDir(cwd: string): string {
@@ -202,7 +219,7 @@ interface CacheEntry {
 	expiresAt: number;
 }
 
-const SESSION_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+const SESSION_CACHE_TTL_MS = 5 * 60_000;
 const SESSION_CACHE_MAX_SIZE = 500;
 const sessionFileCache = new Map<string, CacheEntry>();
 

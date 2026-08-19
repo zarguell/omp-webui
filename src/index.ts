@@ -6,6 +6,8 @@ import { pruneOldRuns } from "./cron/runner";
 import { getDb } from "./db";
 import { buildInjectedEnv } from "./secrets/env";
 import { getSessionFile, listSessions } from "./sessions/listing";
+import { isAuthorized, newCronToken, unauthorized } from "./auth";
+import { ensureSessionIndex, querySessions, syncSessionIndex } from "./sessions/index-store";
 import {
 	getRpcSession,
 	killAllRpcSessions,
@@ -27,6 +29,7 @@ import { startWebhookServer } from "./webhooks/server";
 
 const config = getConfig();
 const db = getDb(config.dbPath);
+const cronToken = newCronToken();
 
 function json(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
@@ -85,6 +88,13 @@ const server = Bun.serve({
 
 		if (pathname === "/api/health") return json({ ok: true });
 
+		// Auth gate — /internal/cron/trigger/* uses the per-process cron token; everything else uses Basic Auth
+		if (pathname.startsWith("/internal/cron/trigger/")) {
+			if (req.headers.get("x-cron-token") !== cronToken) return unauthorized();
+		} else if (!isAuthorized(req)) {
+			return unauthorized();
+		}
+
 		if (pathname === "/api/projects" && method === "GET") {
 			const rows = db
 				.prepare("SELECT * FROM projects ORDER BY created_at DESC")
@@ -96,16 +106,21 @@ const server = Bun.serve({
 			const name = String(body.name ?? "").trim();
 			const cwd = String(body.cwd ?? "").trim();
 			if (!name || !cwd) return badRequest("name and cwd required");
+			const approvalMode = body.approval_mode != null ? String(body.approval_mode) : null;
+			if (approvalMode && !["always-ask", "write", "yolo"].includes(approvalMode)) {
+				return badRequest("approval_mode must be one of: always-ask, write, yolo");
+			}
 			const id = Bun.randomUUIDv7();
 			const now = new Date().toISOString();
 			try {
 				db.prepare(
-					"INSERT INTO projects (id, name, cwd, default_model, created_at) VALUES (?, ?, ?, ?, ?)",
+					"INSERT INTO projects (id, name, cwd, default_model, approval_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 				).run(
 					id,
 					name,
 					path.resolve(cwd),
 					body.default_model ? String(body.default_model) : null,
+					approvalMode,
 					now,
 				);
 			} catch (e) {
@@ -117,6 +132,7 @@ const server = Bun.serve({
 					name,
 					cwd: path.resolve(cwd),
 					default_model: body.default_model ?? null,
+					approval_mode: approvalMode,
 					created_at: now,
 				},
 				201,
@@ -146,6 +162,14 @@ const server = Bun.serve({
 					fields.push("default_model = ?");
 					vals.push(body.default_model ? String(body.default_model) : null);
 				}
+				if (body.approval_mode !== undefined) {
+					const am = body.approval_mode != null ? String(body.approval_mode) : null;
+					if (am && !["always-ask", "write", "yolo"].includes(am)) {
+						return badRequest("approval_mode must be one of: always-ask, write, yolo");
+					}
+					fields.push("approval_mode = ?");
+					vals.push(am);
+				}
 				if (fields.length === 0) return badRequest("nothing to update");
 				vals.push(id);
 				db.prepare(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`).run(
@@ -161,6 +185,8 @@ const server = Bun.serve({
 
 		if (pathname === "/api/sessions" && method === "GET") {
 			const projectId = url.searchParams.get("projectId");
+			const q = url.searchParams.get("q") ?? undefined;
+			const statusFilter = url.searchParams.get("status") ?? undefined;
 			const limit = Math.min(
 				Math.max(Number(url.searchParams.get("limit") ?? 100), 1),
 				200,
@@ -173,11 +199,24 @@ const server = Bun.serve({
 					.get(projectId) as { cwd: string } | undefined;
 				if (proj) projectCwd = proj.cwd;
 			}
-			const { sessions, total } = listSessions(getSessionsRoot(), projectCwd, {
-				limit,
-				offset,
-			});
-			return json({ sessions, total, limit, offset });
+			try {
+				await ensureSessionIndex(db, getSessionsRoot());
+				const { sessions, total } = querySessions(db, {
+					q,
+					cwd: projectCwd,
+					status: statusFilter,
+					limit,
+					offset,
+				});
+				return json({ sessions, total, limit, offset });
+			} catch {
+				// Fallback to disk scan
+				const { sessions, total } = listSessions(getSessionsRoot(), projectCwd, {
+					limit,
+					offset,
+				});
+				return json({ sessions, total, limit, offset });
+			}
 		}
 		if (pathname === "/api/sessions" && method === "POST") {
 			const body = await parseJson(req);
@@ -229,6 +268,13 @@ const server = Bun.serve({
 						}
 					} catch {}
 					const prompt = String(body.prompt ?? "").trim();
+					let resumeApprovalMode: string | undefined;
+					if (cwd) {
+						const proj = db
+							.prepare("SELECT approval_mode FROM projects WHERE cwd = ?")
+							.get(cwd) as { approval_mode: string | null } | undefined;
+						resumeApprovalMode = proj?.approval_mode ?? (body.approvalMode ? String(body.approvalMode) : undefined);
+					}
 					await spawnOmpRpc({
 						db,
 						masterKeyPath: config.masterKeyPath,
@@ -237,6 +283,7 @@ const server = Bun.serve({
 						cwd,
 						resumeId,
 						sessionId: resumeId,
+						approvalMode: resumeApprovalMode,
 					});
 					const rpcAlive = !!getRpcSession(resumeId);
 					return json(
@@ -261,15 +308,17 @@ const server = Bun.serve({
 			let model: string | undefined = body.model
 				? String(body.model)
 				: undefined;
+			let approvalMode: string | undefined;
 			if (projectId) {
 				const proj = db
-					.prepare("SELECT cwd, default_model FROM projects WHERE id = ?")
+					.prepare("SELECT cwd, default_model, approval_mode FROM projects WHERE id = ?")
 					.get(projectId) as
-					| { cwd: string; default_model: string | null }
+					| { cwd: string; default_model: string | null; approval_mode: string | null }
 					| undefined;
 				if (proj) {
 					cwd = proj.cwd;
 					if (!model && proj.default_model) model = proj.default_model;
+					approvalMode = proj.approval_mode ?? (body.approvalMode ? String(body.approvalMode) : undefined);
 				}
 			}
 			if (body.cwd) cwd = String(body.cwd);
@@ -283,6 +332,7 @@ const server = Bun.serve({
 					cwd,
 					model,
 					sessionId,
+					approvalMode,
 				});
 			} catch (e) {
 				return json({ error: String(e) }, 500);
@@ -354,6 +404,7 @@ const server = Bun.serve({
 				}
 				if (!file) return notFound("session file not yet available");
 			}
+			const afterSeq = Math.max(0, parseInt(url.searchParams.get("afterSeq") ?? "0", 10) || 0);
 			let keepAlive: ReturnType<typeof setInterval> | null = null;
 			let maxLifetime: ReturnType<typeof setTimeout> | null = null;
 			let streamCtrl: { close(): void } | null = null;
@@ -368,9 +419,9 @@ const server = Bun.serve({
 			};
 			const stream = new ReadableStream<string>({
 				start(c) {
-					const send = (line: string) => {
+					const send = (line: string, seq: number) => {
 						try {
-							c.enqueue(`data: ${line}\n\n`);
+							c.enqueue(`id: ${seq}\ndata: ${line}\n\n`);
 						} catch {}
 					};
 					try {
@@ -397,6 +448,14 @@ const server = Bun.serve({
 								`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`,
 							);
 						} catch {}
+					}, {
+						afterLine: afterSeq || undefined,
+						onReset: () => {
+							if (closed) return;
+							try {
+								c.enqueue(`event: reset\ndata: ${JSON.stringify({ type: "reset" })}\n\n`);
+							} catch {}
+						},
 					}).then((ctrl) => {
 						streamCtrl = ctrl;
 					});
@@ -445,6 +504,41 @@ const server = Bun.serve({
 					`${JSON.stringify({ type: "abort" })}\n`,
 				);
 			} catch {}
+			return json({ ok: true });
+		}
+		const sessionApprovalMatch = pathname.match(
+			/^\/api\/sessions\/([^/]+)\/approval$/,
+		);
+		if (sessionApprovalMatch && method === "POST") {
+			const sid = sessionApprovalMatch[1];
+			const entry = getRpcSession(sid);
+			if (!entry) return notFound("no active rpc session");
+			const body = await parseJson(req);
+			const approvalId = String(body.id ?? "");
+			if (!approvalId) return badRequest("id required");
+			if (
+				typeof body.value !== "string" &&
+				typeof body.confirmed !== "boolean" &&
+				body.cancelled !== true
+			) {
+				return badRequest("id and one of value/confirmed/cancelled required");
+			}
+			const response: Record<string, unknown> = {
+				type: "extension_ui_response",
+				id: approvalId,
+			};
+			if (typeof body.value === "string") response.value = body.value;
+			else if (typeof body.confirmed === "boolean") response.confirmed = body.confirmed;
+			else if (body.cancelled === true) response.cancelled = true;
+			try {
+				(entry.proc.stdin as unknown as { write(s: string): void }).write(
+					`${JSON.stringify(response)}\n`,
+				);
+			} catch (e) {
+				return json({ error: String(e) }, 500);
+			}
+			entry.respondedApprovals.add(approvalId);
+			entry.pendingApprovals.delete(approvalId);
 			return json({ ok: true });
 		}
 		const sessionModelMatch = pathname.match(
@@ -1200,13 +1294,17 @@ const server = Bun.serve({
 
 function syncCrontab(): void {
 	try {
-		writeCrontab(db, config.crontabPath, config.port, config.bind);
+		writeCrontab(db, config.crontabPath, config.port, config.bind, cronToken);
 	} catch (e) {
 		console.error("writeCrontab failed:", e);
 	}
 }
 
 syncCrontab();
+
+// Session metadata index: immediate + periodic sync
+void syncSessionIndex(db, getSessionsRoot()).catch(() => {});
+setInterval(() => void syncSessionIndex(db, getSessionsRoot()).catch(() => {}), 60_000);
 
 // Prune old cron run history on startup
 try {

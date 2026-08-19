@@ -50,6 +50,9 @@ export function migrate(db: Database): void {
 	if (!hasColumn(db, "projects", "default_model")) {
 		db.run("ALTER TABLE projects ADD COLUMN default_model TEXT");
 	}
+	if (!hasColumn(db, "projects", "approval_mode")) {
+		db.run("ALTER TABLE projects ADD COLUMN approval_mode TEXT");
+	}
 	if (!hasColumn(db, "jobs", "kind")) {
 		db.run("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'prompt'");
 	}
@@ -70,6 +73,22 @@ export function migrate(db: Database): void {
 	if (!hasColumn(db, "jobs", "webhook_token")) {
 		db.run("ALTER TABLE jobs ADD COLUMN webhook_token TEXT");
 	}
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY,
+			path TEXT NOT NULL UNIQUE,
+			cwd TEXT NOT NULL DEFAULT '',
+			title TEXT,
+			status TEXT,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			size INTEGER NOT NULL DEFAULT 0,
+			modified TEXT NOT NULL,
+			indexed_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
+		CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
+	`);
 }
 
 function hasColumn(db: Database, table: string, column: string): boolean {

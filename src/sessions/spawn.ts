@@ -11,6 +11,7 @@ export interface SpawnOptions {
 	sessionDir?: string;
 	resumeId?: string;
 	timeoutMs?: number;
+	approvalMode?: string;
 }
 
 export async function spawnOmpJson(
@@ -53,6 +54,8 @@ export interface RpcSessionEntry {
 	createdAt: string;
 	wsClients: Set<Bun.ServerWebSocket<unknown>>;
 	buffer: string[];
+	respondedApprovals: Set<string>;
+	pendingApprovals: Map<string, { method: string; title?: string; options?: string[] }>;
 }
 
 const rpcSessions = new Map<string, RpcSessionEntry>();
@@ -96,6 +99,20 @@ function pumpRpcStdout(entry: RpcSessionEntry): void {
 						}
 					} catch {}
 				}
+				// Capture tool-approval requests for the frontend
+				try {
+					const parsed = JSON.parse(line);
+					if (
+						parsed.type === "extension_ui_request" &&
+						["select", "confirm", "input"].includes(parsed.method)
+					) {
+						entry.pendingApprovals.set(parsed.id, {
+							method: parsed.method,
+							title: parsed.title,
+							options: parsed.options,
+						});
+					}
+				} catch {}
 			}
 		}
 		if (carry.trim()) {
@@ -118,6 +135,7 @@ export async function spawnOmpRpc(
 	if (opts.cwd) args.push("--cwd", opts.cwd);
 	if (opts.model) args.push("--model", opts.model);
 	if (opts.sessionDir) args.push("--session-dir", opts.sessionDir);
+	if (opts.approvalMode) args.push("--approval-mode", opts.approvalMode);
 
 	const proc = Bun.spawn(["omp", ...args], {
 		env,
@@ -133,6 +151,8 @@ export async function spawnOmpRpc(
 		createdAt: new Date().toISOString(),
 		wsClients: new Set(),
 		buffer: [],
+		respondedApprovals: new Set(),
+		pendingApprovals: new Map(),
 	};
 	rpcSessions.set(opts.sessionId, entry);
 	proc.exited.then(() => {
@@ -162,6 +182,17 @@ export function attachRpcWs(
 ): void {
 	entry.wsClients.add(ws);
 	for (const line of entry.buffer) {
+		// Skip approval requests the client already responded to
+		try {
+			const parsed = JSON.parse(line);
+			if (
+				parsed.type === "extension_ui_request" &&
+				["select", "confirm", "input"].includes(parsed.method) &&
+				entry.respondedApprovals.has(parsed.id)
+			) {
+				continue;
+			}
+		} catch {}
 		try {
 			ws.send(JSON.stringify({ type: "rpc", data: line }));
 		} catch {}
