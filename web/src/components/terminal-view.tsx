@@ -8,6 +8,7 @@ export function TerminalView({
 }): React.ReactElement {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const termRef = useRef<{ focus(): void } | null>(null);
+	const wsRef = useRef<WebSocket | null>(null);
 	const [status, setStatus] = useState<"connecting" | "open" | "closed">(
 		"connecting",
 	);
@@ -87,6 +88,7 @@ export function TerminalView({
 				ws = new WebSocket(
 					`${proto}//${location.host}/api/terminals/${terminalId}/ws`,
 				);
+				wsRef.current = ws;
 				ws.onopen = () => {
 					setStatus("open");
 					doFit();
@@ -165,6 +167,24 @@ export function TerminalView({
 				<span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
 					{terminalId.slice(0, 8)}
 				</span>
+				<div style={{ flex: 1 }} />
+				<button
+					type="button"
+					className="btn btn-ghost"
+					onClick={async () => {
+						try {
+							const text = await navigator.clipboard.readText();
+							if (text && wsRef.current?.readyState === WebSocket.OPEN) {
+								wsRef.current.send(JSON.stringify({ type: "input", data: text }));
+								termRef.current?.focus();
+							}
+						} catch {}
+					}}
+					style={{ fontSize: "var(--text-xs)", padding: "4px 8px" }}
+					title="Paste from clipboard"
+				>
+					Paste
+				</button>
 			</div>
 			<div
 				ref={containerRef}

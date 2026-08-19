@@ -20,71 +20,15 @@ function renderLine(
 ): { role: "user" | "assistant" | "system"; text: string } | null {
 	try {
 		const obj = JSON.parse(line);
-		const entry = obj.entry ?? obj;
-		const msg = entry.message ?? entry;
-		if (msg?.role === "assistant" && Array.isArray(msg.content)) {
-			for (const part of msg.content) {
-				if (
-					part.type === "text" &&
-					typeof part.text === "string" &&
-					part.text.trim()
-				)
-					return { role: "assistant", text: part.text };
-				if (part.type === "toolCall" && part.arguments?.command)
-					return { role: "assistant", text: `$ ${part.arguments.command}` };
-				if (part.type === "toolCall" && part.name)
-					return { role: "assistant", text: `→ ${part.name}` };
-			}
-		}
-		if (msg?.role === "toolResult" && Array.isArray(msg.content)) {
-			const text = msg.content
-				.filter((c: { type: string }) => c.type === "text")
-				.map((c: { text: string }) => c.text)
-				.join("\n");
-			if (text) {
-				const preview = text.split("\n").slice(0, 8).join("\n");
-				return {
-					role: "assistant",
-					text: preview + (text.split("\n").length > 8 ? "\n…" : ""),
-				};
-			}
-		}
-		if (msg?.role === "user" && typeof msg.content === "string")
-			return { role: "user", text: msg.content };
-		if (Array.isArray(msg?.content)) {
-			const text = msg.content
-				.filter((c: { type: string }) => c.type === "text")
-				.map((c: { text: string }) => c.text)
-				.join("\n");
-			if (text)
-				return { role: msg.role === "user" ? "user" : "assistant", text };
-		}
-		if (
-			entry.type === "compaction" ||
-			entry.type === "session_exit" ||
-			entry.type === "session"
-		)
-			return null;
-		if (
-			msg?.content === "" ||
-			(Array.isArray(msg?.content) && msg.content.length === 0)
-		)
-			return null;
-		if (entry.customType === "tool_execution_start") {
-			const d = entry.data as {
-				toolName?: string;
-				args?: { command?: string };
+		if (obj.type === "message" && obj.role && obj.content) {
+			return {
+				role: obj.role as "user" | "assistant" | "system",
+				text: typeof obj.content === "string" ? obj.content : JSON.stringify(obj.content),
 			};
-			if (d?.args?.command)
-				return {
-					role: "system",
-					text: `$ ${String(d.args.command).slice(0, 120)}`,
-				};
-			if (d?.toolName) return { role: "system", text: `→ ${d.toolName}` };
-			return null;
 		}
-		if (typeof msg?.content === "string" && msg.content.trim())
-			return { role: msg.role ?? "assistant", text: msg.content };
+		if (obj.type === "text" && typeof obj.text === "string") {
+			return { role: "assistant", text: obj.text };
+		}
 		return null;
 	} catch {
 		return null;
@@ -114,6 +58,7 @@ export function SessionsPage({
 	const rpcRef = useRef<WebSocket | null>(null);
 	const pageSize = 20;
 	const [page, setPage] = useState(0);
+	const [historyOpen, setHistoryOpen] = useState(false);
 
 	const refresh = async (silent = false) => {
 		if (!silent) setLoading(true);
@@ -136,10 +81,6 @@ export function SessionsPage({
 	};
 	useEffect(() => {
 		void refresh();
-	}, []);
-	useEffect(() => {
-		if (streamRef.current)
-			streamRef.current.scrollTop = streamRef.current.scrollHeight;
 	}, []);
 
 	const filtered = useMemo(() => {
@@ -291,383 +232,405 @@ export function SessionsPage({
 		}
 	};
 
+	const newChat = () => {
+		abortRef.current?.abort();
+		rpcRef.current?.close();
+		setStreamId(null);
+		setLines([]);
+		setRpcStatus("idle");
+		setFollowUp("");
+	};
+
+	const parsedMessages = useMemo(() => {
+		return lines
+			.map(renderLine)
+			.filter((m): m is NonNullable<typeof m> => m !== null);
+	}, [lines]);
+
+	const isActive = streamId !== null;
+
 	return (
-		<div>
-			<h2 style={{ marginTop: 0 }}>Sessions</h2>
-			<p
-				style={{
-					color: "var(--muted)",
-					fontSize: "var(--text-sm)",
-					marginTop: -8,
-				}}
-			>
-				Filesystem — <code>~/.omp/agent/sessions</code> · SSE + RPC WS for live.
-			</p>
-			<div className="card" style={{ marginBottom: 16 }}>
+		<div
+			style={{
+				display: "flex",
+				flexDirection: "column",
+				height: "calc(100dvh - 32px)",
+				maxWidth: "none",
+			}}
+		>
+			{/* Active chat view */}
+			{isActive && (
 				<div
-					style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}
-				>
-					<select
-						aria-label="Project"
-						value={projectId}
-						onChange={(e) => setProjectId(e.target.value)}
-						style={{ flex: 1, minWidth: 160 }}
-					>
-						<option value="">— project —</option>
-						{projects.map((p) => (
-							<option key={p.id} value={p.id}>
-								{p.name}
-							</option>
-						))}
-					</select>
-					<ModelSelect
-						value={model}
-						onChange={setModel}
-						allowNone
-						style={{ flex: 1, minWidth: 160 }}
-						ariaLabel="Model"
-					/>
-				</div>
-				<div style={{ display: "flex", gap: 8 }}>
-					<input
-						aria-label="Prompt"
-						placeholder="Prompt for new session"
-						value={prompt}
-						onChange={(e) => setPrompt(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") void create();
-						}}
-						style={{ flex: 1 }}
-					/>
-					<button
-						type="button"
-						className="btn btn-primary"
-						onClick={() => void create()}
-						disabled={!prompt.trim()}
-					>
-						New chat
-					</button>
-				</div>
-			</div>
-			{err && (
-				<div
-					className="card"
 					style={{
-						borderColor: "var(--error)",
-						color: "var(--error)",
-						marginBottom: 12,
+						flex: 1,
+						display: "flex",
+						flexDirection: "column",
+						minHeight: 0,
 					}}
 				>
-					{err}
-				</div>
-			)}
-			<div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-				<input
-					aria-label="Search sessions"
-					placeholder="Search title, cwd, id…"
-					value={q}
-					onChange={(e) => {
-						setQ(e.target.value);
-						setPage(0);
-					}}
-					style={{ flex: 1 }}
-				/>
-				<button type="button" className="btn" onClick={() => void refresh(true)}>
-					Refresh
-				</button>
-			</div>
-			{loading ? (
-				<div style={{ display: "grid", gap: 8 }}>
-					<div className="skeleton" style={{ height: 56 }} />
-					<div className="skeleton" style={{ height: 56 }} />
-				</div>
-			) : filtered.length === 0 ? (
-				<div
-					className="card"
-					style={{ textAlign: "center", color: "var(--muted)" }}
-				>
-					No sessions — start a new chat above or use the Terminal.
-				</div>
-			) : (
-				<>
-					<div style={{ display: "grid", gap: 8 }}>
-						{paged.map((s) => (
-							<div
-								key={s.id}
-								className="card session-card"
-								style={{
-									display: "flex",
-									justifyContent: "space-between",
-									gap: 12,
-									alignItems: "center",
-								}}
-							>
-								<button
-									type="button"
-									onClick={() => void openStream(s.id)}
-									title={s.id}
-									style={{
-										textAlign: "start",
-										flex: 1,
-										background: "none",
-										border: "none",
-										cursor: "pointer",
-										padding: 0,
-									}}
-								>
-									<strong style={{ fontSize: "var(--text-sm)" }}>
-										{s.title ?? `${s.id.slice(0, 8)}…${s.id.slice(-4)}`}
-									</strong>
-									<div
-										style={{
-											display: "flex",
-											flexWrap: "wrap",
-											gap: 4,
-											alignItems: "center",
-											marginTop: 4,
-										}}
-									>
-										<span
-											style={{
-												color: "var(--muted)",
-												fontSize: "var(--text-xs)",
-											}}
-										>
-											{s.cwd.split("/").slice(-2).join("/")}
-										</span>
-										<span
-											style={{
-												color: "var(--muted)",
-												fontSize: "var(--text-xs)",
-											}}
-										>
-											· {s.messageCount} msgs
-										</span>
-										<span
-											className={`badge ${s.status === "error" ? "badge-error" : s.status === "pending" ? "badge-warn" : ""}`}
-										>
-											{s.status ?? "—"}
-										</span>
-										<span
-											style={{
-												color: "var(--muted)",
-												fontSize: "var(--text-xs)",
-											}}
-										>
-											{s.modified.slice(0, 19).replace("T", " ")}
-										</span>
-									</div>
-								</button>
-								<div
-									className="session-card-actions"
-									style={{ display: "flex", gap: 6, flexShrink: 0 }}
-								>
-									<button
-										type="button"
-										className="btn btn-ghost"
-										onClick={() => void openStream(s.id)}
-										style={{ fontSize: "var(--text-xs)" }}
-									>
-										Preview
-									</button>
-									<button
-										type="button"
-										className="btn btn-primary"
-										onClick={() =>
-											onOpenChat
-												? onOpenChat(s.id)
-												: void openSession(s.id, s.status)
-										}
-									>
-										Open
-									</button>
-								</div>
-							</div>
-						))}
-					</div>
-					{totalPages > 1 && (
-						<div
-							className="pagination"
-							style={{
-								display: "flex",
-								gap: 8,
-								justifyContent: "center",
-								marginTop: 12,
-								alignItems: "center",
-							}}
-						>
-							<button
-								type="button"
-								className="btn"
-								disabled={page === 0}
-								onClick={() => setPage((p) => Math.max(0, p - 1))}
-							>
-								Prev
-							</button>
-							<span
-								style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}
-							>
-								{page + 1} / {totalPages}
-							</span>
-							<button
-								type="button"
-								className="btn"
-								disabled={page >= totalPages - 1}
-								onClick={() => setPage((p) => p + 1)}
-							>
-								Next
-							</button>
-						</div>
-					)}
-				</>
-			)}
-			{streamId && (
-				<div
-					className="card stream-preview"
-					style={{ marginTop: 16, padding: 0, overflow: "hidden" }}
-				>
+					{/* Chat header */}
 					<div
 						style={{
-							padding: "8px 12px",
-							borderBottom: "1px solid var(--border)",
 							display: "flex",
-							justifyContent: "space-between",
 							alignItems: "center",
 							gap: 8,
-							flexWrap: "wrap",
+							marginBottom: 8,
+							flexShrink: 0,
 						}}
 					>
-						<strong style={{ fontSize: "var(--text-sm)" }} title={streamId}>
-							{streamId.slice(0, 8)}…{streamId.slice(-4)} ·{" "}
-							{rpcStatus === "live"
-								? "live"
-								: rpcStatus === "connecting"
-									? "connecting…"
-									: rpcStatus === "closed"
-										? "closed"
-										: "preview"}{" "}
-							<span
-								className={`badge ${rpcStatus === "live" ? "badge-success" : rpcStatus === "connecting" ? "badge-running" : ""}`}
-								style={{ marginInlineStart: 6 }}
-							>
-								{rpcStatus}
-							</span>
-						</strong>
-						<span style={{ display: "flex", gap: 6 }}>
-							{rpcStatus !== "live" && rpcStatus !== "connecting" && (
-								<button
-									type="button"
-									className="btn"
-									onClick={() => attachRpc(streamId)}
-								>
-									Attach RPC
-								</button>
-							)}
-							<button
-								type="button"
-								className="btn"
-								onClick={async () => {
-									try {
-										await apiPost(`/api/sessions/${streamId}/abort`, {});
-									} catch {}
-								}}
-							>
-								Abort
-							</button>
-							<button
-								type="button"
-								className="btn btn-ghost"
-								onClick={() => {
-									abortRef.current?.abort();
-									rpcRef.current?.close();
-									setRpcStatus("idle");
-									setStreamId(null);
-									setLines([]);
-								}}
-							>
-								Close
-							</button>
+						<button
+							type="button"
+							className="btn btn-ghost"
+							onClick={newChat}
+							style={{ fontSize: "var(--text-xs)" }}
+						>
+							← New chat
+						</button>
+						<span
+							className={`badge ${rpcStatus === "live" ? "badge-success" : rpcStatus === "connecting" ? "badge-running" : "badge-warn"}`}
+						>
+							{rpcStatus}
 						</span>
 					</div>
+
+					{/* Messages */}
 					<div
 						ref={streamRef}
 						style={{
-							maxHeight: 420,
+							flex: 1,
 							overflow: "auto",
-							background: "var(--panel)",
-							padding: 12,
+							display: "grid",
+							gap: 12,
+							alignContent: "start",
+							paddingBottom: 16,
 						}}
 					>
-						{lines.length === 0 ? (
-							<span
-								style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}
+						{parsedMessages.map((msg, i) => (
+							<div
+								key={i}
+								className="card"
+								style={{
+									padding: "10px 14px",
+									borderColor:
+										msg.role === "user"
+											? "var(--primary)"
+											: msg.role === "system"
+												? "var(--warning)"
+												: undefined,
+								}}
 							>
-								Waiting for stream…
-							</span>
-						) : (
-							lines.map((l, i) => {
-								const r = renderLine(l);
-								if (!r) return null;
-								return (
-									<div
-										key={i}
-										style={{
-											marginBottom: 8,
-											padding: "6px 8px",
-											borderRadius: 6,
-											background:
-												r.role === "user"
-													? "var(--surface)"
-													: r.role === "system"
-														? "var(--panel)"
-														: "var(--surface)",
-											border: "1px solid var(--border)",
-											fontSize: "var(--text-sm)",
-											whiteSpace: "pre-wrap",
-											wordBreak: "break-word",
-										}}
-									>
-										<span
-											className={`badge ${r.role === "user" ? "badge-running" : r.role === "system" ? "badge-warn" : ""}`}
-											style={{ marginRight: 6 }}
-										>
-											{r.role}
-										</span>
-										{r.text.slice(0, 2000)}
-									</div>
-								);
-							})
+								<div
+									style={{
+										fontSize: "var(--text-xs)",
+										color: "var(--muted)",
+										marginBottom: 4,
+										fontWeight: 600,
+									}}
+								>
+									{msg.role}
+								</div>
+								<div style={{ fontSize: "var(--text-sm)", whiteSpace: "pre-wrap" }}>
+									{msg.text}
+								</div>
+							</div>
+						))}
+						{lines.length === 0 && rpcStatus !== "closed" && (
+							<div style={{ color: "var(--muted)", fontSize: "var(--text-sm)", textAlign: "center", padding: 24 }}>
+								Waiting for response…
+							</div>
 						)}
 					</div>
-					<div
-						style={{
-							padding: 8,
-							borderTop: "1px solid var(--border)",
-							display: "flex",
-							gap: 8,
-						}}
-					>
+
+					{/* Follow-up input */}
+					<div style={{ display: "flex", gap: 8, marginTop: 8, flexShrink: 0 }}>
 						<input
 							aria-label="Follow-up"
-							placeholder="Follow-up prompt…"
+							placeholder={rpcStatus === "closed" ? "Session ended — open from history to resume" : "Type a follow-up…"}
 							value={followUp}
 							onChange={(e) => setFollowUp(e.target.value)}
 							onKeyDown={(e) => {
-								if (e.key === "Enter") void sendFollowUp();
+								if (e.key === "Enter" && !e.shiftKey) {
+									e.preventDefault();
+									void sendFollowUp();
+								}
 							}}
+							disabled={rpcStatus === "closed"}
 							style={{ flex: 1 }}
 						/>
 						<button
 							type="button"
 							className="btn btn-primary"
 							onClick={() => void sendFollowUp()}
-							disabled={!followUp.trim()}
+							disabled={rpcStatus === "closed" || !followUp.trim()}
 						>
 							Send
 						</button>
 					</div>
 				</div>
 			)}
+
+			{/* Landing / prompt view */}
+			{!isActive && (
+				<div
+					style={{
+						flex: 1,
+						display: "flex",
+						flexDirection: "column",
+						alignItems: "center",
+						justifyContent: "center",
+						gap: 24,
+						padding: "0 16px",
+					}}
+				>
+					<div style={{ textAlign: "center" }}>
+						<h2 style={{ marginTop: 0, fontSize: "var(--text-xl)" }}>omp</h2>
+						<p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", marginTop: -4 }}>
+							What are you working on?
+						</p>
+					</div>
+
+					{err && (
+						<div
+							className="card"
+							style={{
+								borderColor: "var(--error)",
+								color: "var(--error)",
+								width: "100%",
+								maxWidth: 640,
+							}}
+						>
+							{err}
+						</div>
+					)}
+
+					<div
+						style={{
+							width: "100%",
+							maxWidth: 640,
+							display: "flex",
+							flexDirection: "column",
+							gap: 8,
+						}}
+					>
+						<textarea
+							aria-label="Prompt"
+							placeholder="Describe what you want to build, fix, or explore…"
+							value={prompt}
+							onChange={(e) => setPrompt(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+									e.preventDefault();
+									void create();
+								}
+							}}
+							rows={4}
+							style={{
+								resize: "none",
+								fontSize: "var(--text-base)",
+								lineHeight: 1.5,
+								padding: 12,
+							}}
+						/>
+						<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+							<select
+								aria-label="Project"
+								value={projectId}
+								onChange={(e) => setProjectId(e.target.value)}
+								style={{ flex: 1, minWidth: 0, fontSize: "var(--text-xs)" }}
+							>
+								<option value="">— project —</option>
+								{projects.map((p) => (
+									<option key={p.id} value={p.id}>
+										{p.name}
+									</option>
+								))}
+							</select>
+							<ModelSelect
+								value={model}
+								onChange={setModel}
+								allowNone
+								style={{ flex: 1, minWidth: 0, fontSize: "var(--text-xs)" }}
+								ariaLabel="Model"
+							/>
+							<button
+								type="button"
+								className="btn btn-primary"
+								onClick={() => void create()}
+								disabled={!prompt.trim()}
+								style={{ flexShrink: 0 }}
+							>
+								Start →
+							</button>
+						</div>
+						<p style={{ color: "var(--muted)", fontSize: "var(--text-xs)", textAlign: "center", margin: 0 }}>
+							Ctrl+Enter to send · Secrets injected as $ENV
+						</p>
+					</div>
+				</div>
+			)}
+
+			{/* Session history — collapsible */}
+			<div style={{ borderTop: "1px solid var(--border)", marginTop: isActive ? 0 : 16 }}>
+				<button
+					type="button"
+					onClick={() => setHistoryOpen((v) => !v)}
+					style={{
+						width: "100%",
+						display: "flex",
+						justifyContent: "space-between",
+						alignItems: "center",
+						padding: "10px 0",
+						background: "none",
+						border: "none",
+						cursor: "pointer",
+						color: "var(--muted)",
+						fontSize: "var(--text-sm)",
+					}}
+				>
+					<span>
+						{historyOpen ? "▾" : "▸"} History · {sessions.length} sessions
+					</span>
+					<div style={{ display: "flex", gap: 6 }}>
+						<input
+							aria-label="Search sessions"
+							placeholder="Search…"
+							value={q}
+							onChange={(e) => {
+								setQ(e.target.value);
+								setPage(0);
+							}}
+							onClick={(e) => e.stopPropagation()}
+							style={{ fontSize: "var(--text-xs)", padding: "4px 8px", width: 160 }}
+						/>
+						<button
+							type="button"
+							className="btn btn-ghost"
+							onClick={(e) => {
+								e.stopPropagation();
+								void refresh(true);
+							}}
+							style={{ fontSize: "var(--text-xs)", padding: "4px 8px" }}
+						>
+							↻
+						</button>
+					</div>
+				</button>
+
+				{historyOpen && (
+					<div style={{ maxHeight: 300, overflow: "auto", display: "grid", gap: 4, paddingBottom: 8 }}>
+						{loading ? (
+							<div className="skeleton" style={{ height: 36 }} />
+						) : paged.length === 0 ? (
+							<p style={{ color: "var(--muted)", fontSize: "var(--text-xs)", textAlign: "center" }}>
+								No sessions yet.
+							</p>
+						) : (
+							paged.map((s) => (
+								<div
+									key={s.id}
+									className="card"
+									style={{
+										display: "flex",
+										justifyContent: "space-between",
+										alignItems: "center",
+										padding: "8px 12px",
+										gap: 8,
+									}}
+								>
+									<button
+										type="button"
+										onClick={() =>
+											onOpenChat
+												? onOpenChat(s.id)
+												: void openSession(s.id, s.status)
+										}
+										style={{
+											textAlign: "start",
+											flex: 1,
+											background: "none",
+											border: "none",
+											cursor: "pointer",
+											padding: 0,
+											minWidth: 0,
+										}}
+									>
+										<div
+											style={{
+												fontSize: "var(--text-sm)",
+												fontWeight: 500,
+												whiteSpace: "nowrap",
+												overflow: "hidden",
+												textOverflow: "ellipsis",
+											}}
+										>
+											{s.title ?? `${s.id.slice(0, 8)}…`}
+										</div>
+										<div
+											style={{
+												display: "flex",
+												gap: 6,
+												alignItems: "center",
+												marginTop: 2,
+											}}
+										>
+											<span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>
+												{s.messageCount} msgs
+											</span>
+											<span className={`badge ${s.status === "error" ? "badge-error" : s.status === "pending" ? "badge-warn" : ""}`} style={{ fontSize: "10px" }}>
+												{s.status ?? "—"}
+											</span>
+											<span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>
+												{s.modified.slice(0, 16).replace("T", " ")}
+											</span>
+										</div>
+									</button>
+									<button
+										type="button"
+										className="btn btn-ghost"
+										onClick={() => void openStream(s.id)}
+										style={{ fontSize: "var(--text-xs)", padding: "4px 8px" }}
+									>
+										Preview
+									</button>
+								</div>
+							))
+						)}
+						{totalPages > 1 && (
+							<div
+								style={{
+									display: "flex",
+									gap: 8,
+									justifyContent: "center",
+									marginTop: 4,
+									alignItems: "center",
+								}}
+							>
+								<button
+									type="button"
+									className="btn btn-ghost"
+									onClick={() => setPage((p) => Math.max(0, p - 1))}
+									disabled={page === 0}
+									style={{ fontSize: "var(--text-xs)" }}
+								>
+									←
+								</button>
+								<span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+									{page + 1} / {totalPages}
+								</span>
+								<button
+									type="button"
+									className="btn btn-ghost"
+									onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+									disabled={page >= totalPages - 1}
+									style={{ fontSize: "var(--text-xs)" }}
+								>
+									→
+								</button>
+							</div>
+						)}
+					</div>
+				)}
+			</div>
 		</div>
 	);
 }
