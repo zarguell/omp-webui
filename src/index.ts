@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getConfig } from "./config";
 import { writeCrontab } from "./cron/crontab";
+import { pruneOldRuns } from "./cron/runner";
 import { getDb } from "./db";
 import { buildInjectedEnv } from "./secrets/env";
 import { getSessionFile, listSessions } from "./sessions/listing";
@@ -38,16 +39,16 @@ function badRequest(msg: string): Response {
 }
 
 async function parseJson(req: Request): Promise<Record<string, unknown>> {
-	try {
-		return (await req.json()) as Record<string, unknown>;
-	} catch {
-		return {};
-	}
+	const body = await req.json().catch(() => null);
+	return (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
 }
 
 function getSessionsRoot(): string {
 	return path.join(config.agentDir, "sessions");
 }
+
+// Prevent concurrent resume/spawn for the same session ID
+const spawningSessions = new Set<string>();
 
 const server = Bun.serve({
 	port: config.port,
@@ -151,24 +152,28 @@ const server = Bun.serve({
 					}
 					return json({ sessionId: resumeId, wsUrl: `/api/sessions/${resumeId}/ws`, resumed: true }, 201);
 				}
-				const file = getSessionFile(getSessionsRoot(), resumeId);
-				if (!file) return notFound("session to resume not found");
-				let cwd: string | undefined;
+				if (spawningSessions.has(resumeId)) {
+					return json({ error: "session is already being spawned" }, 409);
+				}
+				spawningSessions.add(resumeId);
 				try {
-					const headerText = (await Bun.file(file).text()).split("\n").slice(0, 10).join("\n");
-					for (const line of headerText.split("\n")) {
-						try {
-							const obj = JSON.parse(line);
-							const h = obj.header ?? obj;
-							if (h?.cwd) {
-								cwd = h.cwd;
-								break;
-							}
-						} catch {}
-					}
-				} catch {}
-				const prompt = String(body.prompt ?? "").trim();
-				try {
+					const file = getSessionFile(getSessionsRoot(), resumeId);
+					if (!file) return notFound("session to resume not found");
+					let cwd: string | undefined;
+					try {
+						const headerText = (await Bun.file(file).text()).split("\n").slice(0, 10).join("\n");
+						for (const line of headerText.split("\n")) {
+							try {
+								const obj = JSON.parse(line);
+								const h = obj.header ?? obj;
+								if (h?.cwd) {
+									cwd = h.cwd;
+									break;
+								}
+							} catch {}
+						}
+					} catch {}
+					const prompt = String(body.prompt ?? "").trim();
 					await spawnOmpRpc({
 						db,
 						masterKeyPath: config.masterKeyPath,
@@ -178,11 +183,13 @@ const server = Bun.serve({
 						resumeId,
 						sessionId: resumeId,
 					});
+					const rpcAlive = !!getRpcSession(resumeId);
+					return json({ sessionId: resumeId, wsUrl: rpcAlive ? `/api/sessions/${resumeId}/ws` : null, resumed: true, rpcLive: rpcAlive }, 201);
 				} catch (e) {
 					return json({ error: String(e) }, 500);
+				} finally {
+					spawningSessions.delete(resumeId);
 				}
-				const rpcAlive = !!getRpcSession(resumeId);
-				return json({ sessionId: resumeId, wsUrl: rpcAlive ? `/api/sessions/${resumeId}/ws` : null, resumed: true, rpcLive: rpcAlive }, 201);
 			}
 			const prompt = String(body.prompt ?? "").trim();
 			if (!prompt) return badRequest("prompt required");
@@ -274,7 +281,17 @@ const server = Bun.serve({
 				if (!file) return notFound("session file not yet available");
 			}
 			let keepAlive: ReturnType<typeof setInterval> | null = null;
+			let maxLifetime: ReturnType<typeof setTimeout> | null = null;
 			let streamCtrl: { close(): void } | null = null;
+			let closed = false;
+			const MAX_STREAM_LIFETIME_MS = 30 * 60_000; // 30 minutes
+			const cleanup = () => {
+				if (closed) return;
+				closed = true;
+				if (keepAlive) clearInterval(keepAlive);
+				if (maxLifetime) clearTimeout(maxLifetime);
+				streamCtrl?.close();
+			};
 			const stream = new ReadableStream<string>({
 				start(c) {
 					const send = (line: string) => {
@@ -290,7 +307,15 @@ const server = Bun.serve({
 							c.enqueue(`: keepalive\n\n`);
 						} catch {}
 					}, 15000);
+					maxLifetime = setTimeout(() => {
+						try {
+							c.enqueue(`event: heartbeat\ndata: ${JSON.stringify({ type: "max_lifetime_reached" })}\n\n`);
+							c.close();
+						} catch {}
+						cleanup();
+					}, MAX_STREAM_LIFETIME_MS);
 					void streamSessionFile(file!, send, err => {
+						if (closed) return;
 						try {
 							c.enqueue(`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`);
 						} catch {}
@@ -299,8 +324,7 @@ const server = Bun.serve({
 					});
 				},
 				cancel() {
-					if (keepAlive) clearInterval(keepAlive);
-					streamCtrl?.close();
+					cleanup();
 				},
 			});
 			return new Response(stream, {
@@ -688,10 +712,23 @@ const server = Bun.serve({
 		const filePath = path.join(distDir, webFile);
 		if (!filePath.startsWith(distDir + path.sep) && filePath !== path.join(distDir, "index.html"))
 			return new Response("Not found", { status: 404 });
+		const securityHeaders: Record<string, string> = {
+			"x-content-type-options": "nosniff",
+			"x-frame-options": "DENY",
+			"referrer-policy": "strict-origin-when-cross-origin",
+		};
 		const file = Bun.file(filePath);
-		if (await file.exists()) return new Response(file);
+		if (await file.exists()) {
+			const res = new Response(file);
+			for (const [k, v] of Object.entries(securityHeaders)) res.headers.set(k, v);
+			return res;
+		}
 		const indexFile = Bun.file(path.join(distDir, "index.html"));
-		if (await indexFile.exists()) return new Response(indexFile);
+		if (await indexFile.exists()) {
+			const res = new Response(indexFile);
+			for (const [k, v] of Object.entries(securityHeaders)) res.headers.set(k, v);
+			return res;
+		}
 		return new Response("Not found", { status: 404 });
 	},
 
@@ -799,6 +836,13 @@ function syncCrontab(): void {
 }
 
 syncCrontab();
+
+// Prune old cron run history on startup
+try {
+	pruneOldRuns(db);
+} catch (e) {
+	console.error("pruneOldRuns failed:", e);
+}
 
 if (config.bind === "0.0.0.0") {
 	console.warn("WARNING: omp-webui bound to 0.0.0.0 — terminal is RCE. Put behind Tailscale/reverse-proxy auth.");

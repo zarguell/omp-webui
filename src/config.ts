@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface WebuiConfig {
@@ -20,7 +21,6 @@ function localDataDir(): string {
 		if (code === "EROFS" || String(e).includes("EROFS")) return path.join(process.env.HOME ?? "/tmp", ".omp-webui");
 	}
 	try {
-		const fs = require("node:fs");
 		fs.mkdirSync("/data", { recursive: true });
 		return "/data";
 	} catch (e) {

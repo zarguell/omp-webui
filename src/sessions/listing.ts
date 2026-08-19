@@ -179,10 +179,35 @@ function scanOneLevelForSession(sessionsRoot: string, sessionId: string): string
 	return walk(sessionsRoot);
 }
 
-const sessionFileCache = new Map<string, string>();
+interface CacheEntry {
+	path: string;
+	expiresAt: number;
+}
+
+const SESSION_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+const SESSION_CACHE_MAX_SIZE = 500;
+const sessionFileCache = new Map<string, CacheEntry>();
+
+function cacheGet(key: string): string | null {
+	const entry = sessionFileCache.get(key);
+	if (!entry) return null;
+	if (Date.now() > entry.expiresAt) {
+		sessionFileCache.delete(key);
+		return null;
+	}
+	return entry.path;
+}
+
+function cacheSet(key: string, filePath: string): void {
+	if (sessionFileCache.size >= SESSION_CACHE_MAX_SIZE) {
+		const oldest = sessionFileCache.keys().next().value;
+		if (oldest !== undefined) sessionFileCache.delete(oldest);
+	}
+	sessionFileCache.set(key, { path: filePath, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
+}
 
 export function getSessionFile(sessionsRoot: string, sessionId: string): string | null {
-	const cached = sessionFileCache.get(sessionId);
+	const cached = cacheGet(sessionId);
 	if (cached) {
 		try {
 			fs.statSync(cached);
@@ -193,11 +218,11 @@ export function getSessionFile(sessionsRoot: string, sessionId: string): string 
 	}
 	const direct = scanOneLevelForSession(sessionsRoot, sessionId);
 	if (direct) {
-		sessionFileCache.set(sessionId, direct);
+		cacheSet(sessionId, direct);
 		return direct;
 	}
 	const all = listSessions(sessionsRoot, undefined, { limit: 200 });
 	const found = all.sessions.find(s => s.id === sessionId || s.id.startsWith(sessionId));
-	if (found?.path) sessionFileCache.set(sessionId, found.path);
+	if (found?.path) cacheSet(sessionId, found.path);
 	return found?.path ?? null;
 }

@@ -3,6 +3,8 @@ import { buildInjectedEnv } from "../secrets/env";
 
 const MAX_OUTPUT = 200_000;
 const DEFAULT_TIMEOUT_MS = 600_000;
+const MAX_RUNS_PER_JOB = 50;
+const RUNS_KEEP_DAYS = 30;
 
 interface JobRow {
 	id: string;
@@ -120,4 +122,28 @@ export async function runJob(
 	);
 
 	return { runId, status };
+}
+
+/**
+ * Prune old job_runs: keep at most MAX_RUNS_PER_JOB per job,
+ * and delete any run older than RUNS_KEEP_DAYS.
+ */
+export function pruneOldRuns(db: Database): void {
+	const cutoff = new Date(Date.now() - RUNS_KEEP_DAYS * 86_400_000).toISOString();
+	// Delete runs older than retention period
+	db.prepare("DELETE FROM job_runs WHERE started_at < ?").run(cutoff);
+	// For each job, keep only the most recent MAX_RUNS_PER_JOB runs
+	const jobs = db.prepare("SELECT DISTINCT job_id FROM job_runs").all() as { job_id: string }[];
+	for (const { job_id } of jobs) {
+		const stale = db
+			.prepare("SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT -1 OFFSET ?")
+			.all(job_id, MAX_RUNS_PER_JOB) as { id: string }[];
+		if (stale.length > 0) {
+			const ids = stale.map(r => r.id);
+			db.prepare(`DELETE FROM job_runs WHERE job_id = ? AND id IN (${ids.map(() => "?").join(",")})`).run(
+				job_id,
+				...ids,
+			);
+		}
+	}
 }

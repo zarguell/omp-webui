@@ -43,7 +43,7 @@ let idleTimer: ReturnType<typeof setInterval> | null = null;
 // ── Node PTY host subprocess ──────────────────────────────────────────
 let ptyHost: ReturnType<typeof Bun.spawn> | null = null;
 let hostBuf = "";
-const hostReady = Promise.withResolvers<void>();
+let hostReady = Promise.withResolvers<void>();
 const hostLineHandler: ((msg: Record<string, unknown>) => void)[] = [];
 
 function startPtyHost(): void {
@@ -206,10 +206,12 @@ export function killTerminal(id: string): void {
 
 export function killAllTerminals(): void {
 	for (const id of [...terminals.keys()]) killTerminal(id);
-	// Kill the host process
+	// Kill the host process and reset state so it can be restarted
 	if (ptyHost) {
 		try { ptyHost.kill(); } catch {}
 		ptyHost = null;
+		hostBuf = "";
+		hostReady = Promise.withResolvers<void>();
 	}
 }
 
