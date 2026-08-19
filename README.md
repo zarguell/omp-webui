@@ -32,10 +32,12 @@ This is not the right tool. Use a proper IDE environment with auth (e.g. GitHub 
 ## Run
 
 ```bash
-docker build -f packages/omp-webui/Dockerfile -t omp-webui:dev .
-docker run --rm -v omp-webui-data:/data -p 8787:8787 omp-webui:dev
+docker build -t omp-webui:dev .
+docker run --rm -v omp-webui-data:/data -p 8787:8787 -p 8788:8788 omp-webui:dev
 # open http://localhost:8787
 ```
+
+Prebuilt images: `ghcr.io/zarguell/omp-webui` (tags: `latest`, `v0.1.0-alpha`, …).
 
 `OMP_WEBUI_BIND=0.0.0.0` to listen on all interfaces (logs a warning).
 
@@ -43,6 +45,7 @@ docker run --rm -v omp-webui-data:/data -p 8787:8787 omp-webui:dev
 
 - `OMP_WEBUI_DATA_DIR` / `DATA_DIR` — default `/data`
 - `PI_CODING_AGENT_DIR` — default `$DATA_DIR/agent` (sessions, `config.yml`, `models.yml`, `agent.db`)
+- `OMP_WEBUI_WEBHOOK_PORT` — default `8788`; `0` disables the webhook server
 - `OMP_WEBUI_PORT` / `PORT` — default `8787`
 - `OMP_WEBUI_BIND` — default `127.0.0.1`
 - `CRONTAB_PATH` — default `$DATA_DIR/crontab`
@@ -56,10 +59,27 @@ Add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. via the Secrets page. Stored AES
 ## Terminal
 
 Each terminal is a PTY (`PtySession` / `portable-pty`). Default shell, or `command: "omp login"` / `omp config` / `vim`. Use it for `omp login` (OAuth), `omp models`, `omp config`, `models.yml` edits — the escape hatch so the web UI doesn't need to reimplement every CLI surface. `xterm.js` renders in browser; `ghostty-web` WASM VT is swappable via `TerminalView`.
-
 ## Cron
 
 Jobs use `supercronic` (`aptible/supercronic`). Crontab at `$DATA_DIR/crontab`, managed by the API. Each tick `curl`s `POST /internal/cron/trigger/:id` on localhost so secret decryption and `omp --mode json -p` happen in one place.
+
+Two job kinds:
+
+- **Prompt** — runs `omp --mode json -p <prompt>` (previous behavior, unchanged).
+- **Script** — runs deterministic bash: inline script body or a file on disk, with optional positional args (available as `$1..$n` for inline, `"$@"` for files). Same env injection (decrypted secrets), cwd, timeout, and run history as prompt jobs.
+
+## Webhooks
+
+Jobs can be triggered by webhook instead of a schedule. Webhook jobs get a per-job secret token:
+
+```bash
+curl -X POST http://host:8788/hook/<jobId>/<token> -H 'content-type: application/json' -d '{"repo":"acme","tag":"v1"}'
+```
+
+- Responds `202` immediately; the run appears in the Cron → Recent runs list.
+- Prompt bodies support template interpolation: `{{payload}}` (raw JSON), `{{payload.field.nested}}`, `{{headers.Name}}` (case-insensitive). Missing paths resolve to empty string. Inline script bodies are interpolated the same way; file paths and args are not.
+- Wrong job id or token → `404` (job existence is not revealed). Rotate the token via the Cron UI or `POST /api/cron/jobs/:id/rotate-token`.
+- Webhook-only jobs store an empty cron expression and are omitted from the supercronic crontab.
 
 ## Sessions
 
