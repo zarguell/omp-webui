@@ -213,6 +213,7 @@ export function killAllTerminals(): void {
 		hostBuf = "";
 		hostReady = Promise.withResolvers<void>();
 	}
+}
 
 export function attachWs(entry: TerminalEntry, ws: Bun.ServerWebSocket<unknown>): void {
 	entry.wsClients.add(ws);

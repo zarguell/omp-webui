@@ -135,12 +135,12 @@ export function pruneOldRuns(db: Database): void {
 	// For each job, keep only the most recent MAX_RUNS_PER_JOB runs
 	const jobs = db.prepare("SELECT DISTINCT job_id FROM job_runs").all() as { job_id: string }[];
 	for (const { job_id } of jobs) {
-		const keep = db
-			.prepare("SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 1 OFFSET ?")
+		const stale = db
+			.prepare("SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT -1 OFFSET ?")
 			.all(job_id, MAX_RUNS_PER_JOB) as { id: string }[];
-		if (keep.length > 0) {
-			const ids = keep.map(r => r.id);
-			db.prepare(`DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (${ids.map(() => "?").join(",")})`).run(
+		if (stale.length > 0) {
+			const ids = stale.map(r => r.id);
+			db.prepare(`DELETE FROM job_runs WHERE job_id = ? AND id IN (${ids.map(() => "?").join(",")})`).run(
 				job_id,
 				...ids,
 			);
