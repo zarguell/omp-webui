@@ -13,7 +13,12 @@ export interface SessionSummary {
 	status?: string;
 }
 
-function parseSessionHeader(text: string): { id?: string; cwd?: string; title?: string; timestamp?: string } {
+function parseSessionHeader(text: string): {
+	id?: string;
+	cwd?: string;
+	title?: string;
+	timestamp?: string;
+} {
 	const lines = text.split("\n");
 	for (const line of lines.slice(0, 10)) {
 		if (!line.trim()) continue;
@@ -99,8 +104,15 @@ export function listSessions(
 						}
 					})();
 					const header = parseSessionHeader(head);
-					if (projectCwd && header.cwd && path.resolve(header.cwd) !== path.resolve(projectCwd)) continue;
-					const messageCount = tail ? tail.split("\n").filter(Boolean).length : 0;
+					if (
+						projectCwd &&
+						header.cwd &&
+						path.resolve(header.cwd) !== path.resolve(projectCwd)
+					)
+						continue;
+					const messageCount = tail
+						? tail.split("\n").filter(Boolean).length
+						: 0;
 					results.push({
 						id: header.id ?? path.basename(full, ".jsonl"),
 						path: full,
@@ -130,7 +142,10 @@ export function listSessions(
 	}
 
 	results.sort((a, b) => b.modified.localeCompare(a.modified));
-	if (skippedBig > 0) console.warn(`Skipped ${skippedBig} sessions > ${MAX_FILE_SIZE / 1024 / 1024} MB`);
+	if (skippedBig > 0)
+		console.warn(
+			`Skipped ${skippedBig} sessions > ${MAX_FILE_SIZE / 1024 / 1024} MB`,
+		);
 	const total = results.length;
 	return { sessions: results.slice(offset, offset + limit), total };
 }
@@ -150,7 +165,10 @@ function encodeSessionDir(cwd: string): string {
 	return `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
-function scanOneLevelForSession(sessionsRoot: string, sessionId: string): string | null {
+function scanOneLevelForSession(
+	sessionsRoot: string,
+	sessionId: string,
+): string | null {
 	function walk(dir: string): string | null {
 		let entries: string[];
 		try {
@@ -203,10 +221,16 @@ function cacheSet(key: string, filePath: string): void {
 		const oldest = sessionFileCache.keys().next().value;
 		if (oldest !== undefined) sessionFileCache.delete(oldest);
 	}
-	sessionFileCache.set(key, { path: filePath, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
+	sessionFileCache.set(key, {
+		path: filePath,
+		expiresAt: Date.now() + SESSION_CACHE_TTL_MS,
+	});
 }
 
-export function getSessionFile(sessionsRoot: string, sessionId: string): string | null {
+export function getSessionFile(
+	sessionsRoot: string,
+	sessionId: string,
+): string | null {
 	const cached = cacheGet(sessionId);
 	if (cached) {
 		try {
@@ -222,7 +246,9 @@ export function getSessionFile(sessionsRoot: string, sessionId: string): string 
 		return direct;
 	}
 	const all = listSessions(sessionsRoot, undefined, { limit: 200 });
-	const found = all.sessions.find(s => s.id === sessionId || s.id.startsWith(sessionId));
+	const found = all.sessions.find(
+		(s) => s.id === sessionId || s.id.startsWith(sessionId),
+	);
 	if (found?.path) cacheSet(sessionId, found.path);
 	return found?.path ?? null;
 }

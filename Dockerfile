@@ -9,7 +9,10 @@ ARG OMP_VERSION
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
     BUN_INSTALL=/opt/bun \
     PATH=/opt/bun/bin:/usr/local/bin:/usr/bin:/bin
-RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip openssh-client tini sqlite3 build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip xz-utils openssh-client tini sqlite3 build-essential pkg-config libssl-dev && rm -rf /var/lib/apt/lists/* \
+ && NODE_ARCH=$(case "$(uname -m)" in x86_64) echo x64;; aarch64) echo arm64;; *) echo x64;; esac) \
+ && curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NODE_ARCH}.tar.xz | tar -xJ -C /usr/local --strip-components=1 \
+ && node --version && npm --version \
  && curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && if [ "$(uname -m)" = "x86_64" ]; then \
       curl -fsSL -o /tmp/bun-baseline.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-baseline.zip" \
@@ -21,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
 FROM base AS builder
 WORKDIR /app
 COPY package.json tsconfig.json vite.config.ts ./
-RUN bun install
+RUN OMPI_WEBUI_SKIP_PTY=1 bun install
 COPY src ./src
 COPY web ./web
 RUN bun run build
@@ -33,6 +36,11 @@ RUN ARCH=$(case "$(uname -m)" in x86_64) echo amd64;; aarch64) echo arm64;; *) e
  && curl -fsSL -o /usr/local/bin/supercronic https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH} \
  && chmod +x /usr/local/bin/supercronic && supercronic -h 2>&1 | head -5
 COPY --from=builder /app/dist /app/dist
+
+# Terminal PTY host: node + node-pty (compiled for this arch), resolvable from /app/dist/pty-host.mjs
+WORKDIR /app
+COPY package.json ./
+RUN npm install node-pty@1.1.0 --no-save --omit=dev --loglevel=error && node -e "require('node-pty')"
 COPY entrypoint.sh /usr/local/bin/omp-webui-entrypoint
 RUN chmod +x /usr/local/bin/omp-webui-entrypoint
 VOLUME ["/data"]

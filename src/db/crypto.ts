@@ -17,7 +17,9 @@ function loadMasterKey(masterKeyPath: string): Buffer {
 			const urlDecoded = Buffer.from(trimmed, "base64url");
 			if (urlDecoded.length === 32) return urlDecoded;
 		} catch {}
-		throw new Error("OMP_WEBUI_MASTER_KEY must be 32 bytes as hex (64 chars) or base64");
+		throw new Error(
+			"OMP_WEBUI_MASTER_KEY must be 32 bytes as hex (64 chars) or base64",
+		);
 	}
 	if (!fs.existsSync(masterKeyPath)) {
 		fs.mkdirSync(path.dirname(masterKeyPath), { recursive: true });
@@ -38,14 +40,21 @@ function loadMasterKey(masterKeyPath: string): Buffer {
 		const decoded = Buffer.from(raw, "base64url");
 		if (decoded.length === 32) return decoded;
 	} catch {}
-	throw new Error(`Master key at ${masterKeyPath} is not 32 bytes (hex 64 or base64)`);
+	throw new Error(
+		`Master key at ${masterKeyPath} is not 32 bytes (hex 64 or base64)`,
+	);
 }
 
 let cachedKey: Buffer | null = null;
 let cachedPath: string | null = null;
 
 export function getMasterKey(masterKeyPath: string): Buffer {
-	if (cachedKey && cachedPath === masterKeyPath && !process.env.OMP_WEBUI_MASTER_KEY) return cachedKey;
+	if (
+		cachedKey &&
+		cachedPath === masterKeyPath &&
+		!process.env.OMP_WEBUI_MASTER_KEY
+	)
+		return cachedKey;
 	const key = loadMasterKey(masterKeyPath);
 	if (!process.env.OMP_WEBUI_MASTER_KEY) {
 		cachedKey = key;

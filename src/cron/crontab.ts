@@ -13,20 +13,33 @@ function validateCron(expr: string): void {
 	try {
 		CronExpressionParser.parse(expr);
 	} catch (err) {
-		throw new Error(`Invalid cron expression ${JSON.stringify(expr)}: ${String(err)}`);
+		throw new Error(
+			`Invalid cron expression ${JSON.stringify(expr)}: ${String(err)}`,
+		);
 	}
 }
 
-function renderCrontabLine(job: CrontabJob, webuiPort: number, bindHost: string): string {
+function renderCrontabLine(
+	job: CrontabJob,
+	webuiPort: number,
+	bindHost: string,
+): string {
 	const host = bindHost === "0.0.0.0" ? "127.0.0.1" : bindHost;
 	return `${job.cron_expr} curl -sS -X POST http://${host}:${webuiPort}/internal/cron/trigger/${job.id} -H 'X-Job-Id: ${job.id}' >> /tmp/omp-webui-cron.log 2>&1`;
 }
 
-export function writeCrontab(db: Database, crontabPath: string, webuiPort: number, bindHost: string): void {
+export function writeCrontab(
+	db: Database,
+	crontabPath: string,
+	webuiPort: number,
+	bindHost: string,
+): void {
 	const jobs = db
-		.prepare(`SELECT id, cron_expr, enabled, "trigger" FROM jobs WHERE enabled = 1 ORDER BY id`)
+		.prepare(
+			`SELECT id, cron_expr, enabled, "trigger" FROM jobs WHERE enabled = 1 ORDER BY id`,
+		)
 		.all() as CrontabJob[];
-	const scheduled = jobs.filter(j => j.cron_expr.trim() !== "");
+	const scheduled = jobs.filter((j) => j.cron_expr.trim() !== "");
 	for (const job of scheduled) validateCron(job.cron_expr);
 
 	const lines = ["# omp-webui managed — do not edit manually", ""];

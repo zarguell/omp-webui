@@ -13,7 +13,9 @@ export interface SpawnOptions {
 	timeoutMs?: number;
 }
 
-export async function spawnOmpJson(opts: SpawnOptions): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+export async function spawnOmpJson(
+	opts: SpawnOptions,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
 	const env = buildInjectedEnv(opts.db, opts.masterKeyPath, opts.agentDir);
 	const args = ["--mode", "json", "-p", opts.prompt];
 	if (opts.cwd) args.push("--cwd", opts.cwd);
@@ -82,9 +84,14 @@ function pumpRpcStdout(entry: RpcSessionEntry): void {
 					try {
 						const parsed = JSON.parse(line);
 						if (parsed.type === "ready" || line.includes('"type":"ready"')) {
-							const promptPayload = JSON.stringify({ type: "prompt", message: entry.prompt });
+							const promptPayload = JSON.stringify({
+								type: "prompt",
+								message: entry.prompt,
+							});
 							try {
-								(entry.proc.stdin as unknown as { write(s: string): void }).write(`${promptPayload}\n`);
+								(
+									entry.proc.stdin as unknown as { write(s: string): void }
+								).write(`${promptPayload}\n`);
 							} catch {}
 						}
 					} catch {}
@@ -102,7 +109,9 @@ function pumpRpcStdout(entry: RpcSessionEntry): void {
 	})();
 }
 
-export async function spawnOmpRpc(opts: SpawnOptions & { sessionId: string }): Promise<RpcSessionEntry> {
+export async function spawnOmpRpc(
+	opts: SpawnOptions & { sessionId: string },
+): Promise<RpcSessionEntry> {
 	const env = buildInjectedEnv(opts.db, opts.masterKeyPath, opts.agentDir);
 	const args = ["--mode", "rpc"];
 	if (opts.resumeId) args.push("--resume", opts.resumeId);
@@ -129,7 +138,12 @@ export async function spawnOmpRpc(opts: SpawnOptions & { sessionId: string }): P
 	proc.exited.then(() => {
 		for (const ws of entry.wsClients) {
 			try {
-				ws.send(JSON.stringify({ type: "rpc", data: JSON.stringify({ type: "exit", exitCode: 0 }) }));
+				ws.send(
+					JSON.stringify({
+						type: "rpc",
+						data: JSON.stringify({ type: "exit", exitCode: 0 }),
+					}),
+				);
 			} catch {}
 		}
 		rpcSessions.delete(opts.sessionId);
@@ -142,7 +156,10 @@ export function getRpcSession(sessionId: string): RpcSessionEntry | undefined {
 	return rpcSessions.get(sessionId);
 }
 
-export function attachRpcWs(entry: RpcSessionEntry, ws: Bun.ServerWebSocket<unknown>): void {
+export function attachRpcWs(
+	entry: RpcSessionEntry,
+	ws: Bun.ServerWebSocket<unknown>,
+): void {
 	entry.wsClients.add(ws);
 	for (const line of entry.buffer) {
 		try {
@@ -151,12 +168,25 @@ export function attachRpcWs(entry: RpcSessionEntry, ws: Bun.ServerWebSocket<unkn
 	}
 }
 
-export function detachRpcWs(entry: RpcSessionEntry, ws: Bun.ServerWebSocket<unknown>): void {
+export function detachRpcWs(
+	entry: RpcSessionEntry,
+	ws: Bun.ServerWebSocket<unknown>,
+): void {
 	entry.wsClients.delete(ws);
 }
 
-export function listRpcSessions(): { id: string; cwd?: string; model?: string; createdAt: string }[] {
-	return [...rpcSessions.entries()].map(([id, e]) => ({ id, cwd: e.cwd, model: e.model, createdAt: e.createdAt }));
+export function listRpcSessions(): {
+	id: string;
+	cwd?: string;
+	model?: string;
+	createdAt: string;
+}[] {
+	return [...rpcSessions.entries()].map(([id, e]) => ({
+		id,
+		cwd: e.cwd,
+		model: e.model,
+		createdAt: e.createdAt,
+	}));
 }
 
 export function killAllRpcSessions(): void {

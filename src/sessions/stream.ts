@@ -31,7 +31,10 @@ export async function streamSessionFile(
 		if (closed) return;
 		try {
 			const stat = fs.statSync(sessionPath);
-			if (stat.size < offset) { offset = 0; carry = ""; }
+			if (stat.size < offset) {
+				offset = 0;
+				carry = "";
+			}
 			if (stat.size === offset) return;
 			const fd = fs.openSync(sessionPath, "r");
 			const len = stat.size - offset;
@@ -70,7 +73,8 @@ export async function streamSessionFile(
 		try {
 			watcher = fs.watch(sessionPath, readIncremental);
 			watcher.on("error", () => {
-				if (!pollTimer && !closed) pollTimer = setInterval(readIncremental, 500);
+				if (!pollTimer && !closed)
+					pollTimer = setInterval(readIncremental, 500);
 			});
 		} catch {
 			pollTimer = setInterval(readIncremental, 500);

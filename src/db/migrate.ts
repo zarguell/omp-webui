@@ -63,7 +63,9 @@ export function migrate(db: Database): void {
 		db.run("ALTER TABLE jobs ADD COLUMN script_args TEXT");
 	}
 	if (!hasColumn(db, "jobs", "trigger")) {
-		db.run(`ALTER TABLE jobs ADD COLUMN "trigger" TEXT NOT NULL DEFAULT 'schedule'`);
+		db.run(
+			`ALTER TABLE jobs ADD COLUMN "trigger" TEXT NOT NULL DEFAULT 'schedule'`,
+		);
 	}
 	if (!hasColumn(db, "jobs", "webhook_token")) {
 		db.run("ALTER TABLE jobs ADD COLUMN webhook_token TEXT");
@@ -71,6 +73,8 @@ export function migrate(db: Database): void {
 }
 
 function hasColumn(db: Database, table: string, column: string): boolean {
-	const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-	return rows.some(r => r.name === column);
+	const rows = db.prepare(`PRAGMA table_info(${table})`).all() as {
+		name: string;
+	}[];
+	return rows.some((r) => r.name === column);
 }

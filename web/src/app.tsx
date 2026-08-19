@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type React from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./tokens.css";
-import { CommandPalette, type Command } from "./components/command-palette";
+import { type Command, CommandPalette } from "./components/command-palette";
 import { ChatPage } from "./pages/chat";
 import { CronPage } from "./pages/cron";
 import { ProjectsPage } from "./pages/projects";
@@ -9,7 +10,13 @@ import { SessionsPage } from "./pages/sessions";
 import { SettingsPage } from "./pages/settings";
 import { TerminalPage } from "./pages/terminal";
 
-type Tab = "sessions" | "terminal" | "projects" | "secrets" | "cron" | "settings";
+type Tab =
+	| "sessions"
+	| "terminal"
+	| "projects"
+	| "secrets"
+	| "cron"
+	| "settings";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
 	{ id: "sessions", label: "Sessions", icon: "💬" },
@@ -20,10 +27,23 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
 	{ id: "settings", label: "Settings", icon: "⚙" },
 ];
 
+const THEME_KEY = "omp-theme";
+
+function initialTheme(): "dark" | "light" {
+	const saved = localStorage.getItem(THEME_KEY);
+	return saved === "light" ? "light" : "dark";
+}
+
 export function App(): React.ReactElement {
 	const [tab, setTab] = useState<Tab>("sessions");
 	const [palette, setPalette] = useState(false);
 	const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+	const [theme, setTheme] = useState<"dark" | "light">(initialTheme);
+
+	useEffect(() => {
+		document.documentElement.dataset.theme = theme;
+		localStorage.setItem(THEME_KEY, theme);
+	}, [theme]);
 
 	const openChat = useCallback((id: string) => {
 		setChatSessionId(id);
@@ -35,36 +55,70 @@ export function App(): React.ReactElement {
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(v => !v); }
-			if (e.key === "Escape" && chatSessionId) { e.preventDefault(); closeChat(); }
+			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				setPalette((v) => !v);
+			}
+			if (e.key === "Escape" && chatSessionId) {
+				e.preventDefault();
+				closeChat();
+			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, [chatSessionId, closeChat]);
 
-	const commands: Command[] = useMemo(() => TABS.map(t => ({
-		id: `nav-${t.id}`,
-		label: `Go to ${t.label}`,
-		hint: `Tab`,
-		action: () => { setChatSessionId(null); setTab(t.id); },
-	})), []);
+	const commands: Command[] = useMemo(
+		() =>
+			TABS.map((t) => ({
+				id: `nav-${t.id}`,
+				label: `Go to ${t.label}`,
+				hint: `Tab`,
+				action: () => {
+					setChatSessionId(null);
+					setTab(t.id);
+				},
+			})),
+		[],
+	);
+
+	const toggleTheme = useCallback(() => {
+		setTheme((t) => (t === "dark" ? "light" : "dark"));
+	}, []);
 
 	const nav = (
 		<nav aria-label="Primary">
 			<p className="nav-title">omp-webui</p>
 			<p className="nav-sub">headless omp · ⌘K</p>
-			{TABS.map(t => (
+			{TABS.map((t) => (
 				<button
 					key={t.id}
 					type="button"
 					className="nav-item"
 					aria-current={tab === t.id ? "page" : undefined}
-					onClick={() => { setChatSessionId(null); setTab(t.id); }}
+					onClick={() => {
+						setChatSessionId(null);
+						setTab(t.id);
+					}}
 				>
-					<span className="nav-icon" aria-hidden="true">{t.icon}</span>
+					<span className="nav-icon" aria-hidden="true">
+						{t.icon}
+					</span>
 					<span className="nav-label">{t.label}</span>
 				</button>
 			))}
+			<button
+				type="button"
+				className="nav-item"
+				aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+				title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+				onClick={toggleTheme}
+			>
+				<span className="nav-icon" aria-hidden="true">
+					{theme === "dark" ? "☀️" : "🌙"}
+				</span>
+				<span className="nav-label">{theme === "dark" ? "Light" : "Dark"}</span>
+			</button>
 		</nav>
 	);
 
@@ -76,7 +130,12 @@ export function App(): React.ReactElement {
 				<main style={{ padding: 0, maxWidth: "none" }}>
 					<ChatPage sessionId={chatSessionId} onBack={closeChat} />
 				</main>
-				{palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
+				{palette && (
+					<CommandPalette
+						commands={commands}
+						onClose={() => setPalette(false)}
+					/>
+				)}
 			</div>
 		);
 	}
@@ -92,7 +151,9 @@ export function App(): React.ReactElement {
 				{tab === "cron" && <CronPage />}
 				{tab === "settings" && <SettingsPage />}
 			</main>
-			{palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
+			{palette && (
+				<CommandPalette commands={commands} onClose={() => setPalette(false)} />
+			)}
 		</div>
 	);
 }

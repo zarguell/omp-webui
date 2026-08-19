@@ -1,22 +1,29 @@
-import { $ } from "bun";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 function detectShell(): string {
 	// 1. $SHELL env var (set on most systems)
-	if (process.env.SHELL && fs.existsSync(process.env.SHELL)) return process.env.SHELL;
+	if (process.env.SHELL && fs.existsSync(process.env.SHELL))
+		return process.env.SHELL;
 	// 2. /etc/passwd for current user
 	try {
 		const user = os.userInfo().username;
 		const passwd = fs.readFileSync("/etc/passwd", "utf8");
 		for (const line of passwd.split("\n")) {
 			const [name, , , , , shellPath] = line.split(":");
-			if (name === user && shellPath && fs.existsSync(shellPath)) return shellPath;
+			if (name === user && shellPath && fs.existsSync(shellPath))
+				return shellPath;
 		}
 	} catch {}
 	// 3. Common shells in preference order
-	for (const sh of ["/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash", "/bin/sh"]) {
+	for (const sh of [
+		"/bin/zsh",
+		"/usr/bin/zsh",
+		"/bin/bash",
+		"/usr/bin/bash",
+		"/bin/sh",
+	]) {
 		if (fs.existsSync(sh)) return sh;
 	}
 	return "/bin/sh";
@@ -81,16 +88,28 @@ function startPtyHost(): void {
 	};
 	void reader();
 
-	// Suppress stderr (debug noise)
+	// Reject pending waits and allow a clean restart if the host dies
+	void ptyHost.exited.then((code) => {
+		if (!ptyHost) return; // intentional shutdown (killAllTerminals)
+		console.error(`pty host exited (code ${code})`);
+		ptyHost = null;
+		hostBuf = "";
+		hostReady.reject(
+			new Error(
+				`pty host exited (code ${code}) — is node + node-pty installed?`,
+			),
+		);
+		hostReady = Promise.withResolvers<void>();
+	});
+
+	// Consume stderr (debug noise)
 	const errReader = async () => {
 		if (!ptyHost) return;
 		const stream = ptyHost.stderr as ReadableStream<Uint8Array>;
 		const r = stream.getReader();
-		const decoder = new TextDecoder();
 		while (true) {
 			const { value, done } = await r.read();
 			if (done) break;
-			// silently consume
 		}
 	};
 	void errReader();
@@ -99,7 +118,9 @@ function startPtyHost(): void {
 function hostSend(msg: Record<string, unknown>): void {
 	if (!ptyHost) return;
 	try {
-		(ptyHost.stdin as unknown as { write(s: string): void }).write(JSON.stringify(msg) + "\n");
+		(ptyHost.stdin as unknown as { write(s: string): void }).write(
+			`${JSON.stringify(msg)}\n`,
+		);
 	} catch {}
 }
 
@@ -111,14 +132,19 @@ hostLineHandler.push((msg) => {
 	if (!entry) return;
 	if (msg.type === "output" && typeof msg.data === "string") {
 		entry.buffer += msg.data;
-		if (entry.buffer.length > MAX_BUFFER) entry.buffer = entry.buffer.slice(-MAX_BUFFER);
+		if (entry.buffer.length > MAX_BUFFER)
+			entry.buffer = entry.buffer.slice(-MAX_BUFFER);
 		for (const ws of entry.wsClients) {
-			try { ws.send(JSON.stringify({ type: "output", data: msg.data })); } catch {}
+			try {
+				ws.send(JSON.stringify({ type: "output", data: msg.data }));
+			} catch {}
 		}
 	} else if (msg.type === "exit") {
 		const exitCode = msg.exitCode as number | null;
 		for (const ws of entry.wsClients) {
-			try { ws.send(JSON.stringify({ type: "exit", exitCode })); } catch {}
+			try {
+				ws.send(JSON.stringify({ type: "exit", exitCode }));
+			} catch {}
 		}
 		entry.buffer += `\r\n[exit ${exitCode ?? ""}]\r\n`;
 		setTimeout(() => {
@@ -133,7 +159,10 @@ function startIdleReaper(): void {
 	idleTimer = setInterval(() => {
 		const now = Date.now();
 		for (const [id, entry] of terminals) {
-			if (now - new Date(entry.createdAt).getTime() > IDLE_KILL_MS && entry.wsClients.size === 0) {
+			if (
+				now - new Date(entry.createdAt).getTime() > IDLE_KILL_MS &&
+				entry.wsClients.size === 0
+			) {
 				killTerminal(id);
 			}
 		}
@@ -149,8 +178,13 @@ export interface CreateTerminalOptions {
 	env: Record<string, string>;
 }
 
-export async function createTerminal(opts: CreateTerminalOptions): Promise<TerminalEntry> {
-	if (terminals.size >= MAX_TERMINALS) throw new Error(`Too many terminals (max ${MAX_TERMINALS}) — kill one first`);
+export async function createTerminal(
+	opts: CreateTerminalOptions,
+): Promise<TerminalEntry> {
+	if (terminals.size >= MAX_TERMINALS)
+		throw new Error(
+			`Too many terminals (max ${MAX_TERMINALS}) — kill one first`,
+		);
 	const id = Bun.randomUUIDv7();
 	const cwd = opts.cwd ?? process.cwd();
 	const cols = Math.min(Math.max(opts.cols ?? 80, 20), 300);
@@ -175,7 +209,11 @@ export async function createTerminal(opts: CreateTerminalOptions): Promise<Termi
 	const shell = detectShell();
 	const args = opts.command
 		? [shell.includes("zsh") ? "-l" : "-i", "-c", opts.command]
-		: shell.includes("zsh") ? ["-i", "-l"] : shell.includes("fish") ? [] : ["-i"];
+		: shell.includes("zsh")
+			? ["-i", "-l"]
+			: shell.includes("fish")
+				? []
+				: ["-i"];
 
 	if (!opts.command) {
 		entry.buffer = `\r\n— shell: ${shell} @ ${cwd} —\r\n`;
@@ -189,8 +227,16 @@ export function getTerminal(id: string): TerminalEntry | undefined {
 	return terminals.get(id);
 }
 
-export function listTerminals(): { id: string; cwd: string; createdAt: string }[] {
-	return [...terminals.values()].map(t => ({ id: t.id, cwd: t.cwd, createdAt: t.createdAt }));
+export function listTerminals(): {
+	id: string;
+	cwd: string;
+	createdAt: string;
+}[] {
+	return [...terminals.values()].map((t) => ({
+		id: t.id,
+		cwd: t.cwd,
+		createdAt: t.createdAt,
+	}));
 }
 
 export function killTerminal(id: string): void {
@@ -208,14 +254,19 @@ export function killAllTerminals(): void {
 	for (const id of [...terminals.keys()]) killTerminal(id);
 	// Kill the host process and reset state so it can be restarted
 	if (ptyHost) {
-		try { ptyHost.kill(); } catch {}
+		try {
+			ptyHost.kill();
+		} catch {}
 		ptyHost = null;
 		hostBuf = "";
 		hostReady = Promise.withResolvers<void>();
 	}
 }
 
-export function attachWs(entry: TerminalEntry, ws: Bun.ServerWebSocket<unknown>): void {
+export function attachWs(
+	entry: TerminalEntry,
+	ws: Bun.ServerWebSocket<unknown>,
+): void {
 	entry.wsClients.add(ws);
 	if (entry.buffer) {
 		try {
@@ -224,7 +275,10 @@ export function attachWs(entry: TerminalEntry, ws: Bun.ServerWebSocket<unknown>)
 	}
 }
 
-export function detachWs(entry: TerminalEntry, ws: Bun.ServerWebSocket<unknown>): void {
+export function detachWs(
+	entry: TerminalEntry,
+	ws: Bun.ServerWebSocket<unknown>,
+): void {
 	entry.wsClients.delete(ws);
 }
 

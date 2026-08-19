@@ -49,21 +49,28 @@ function stringifyValue(v: unknown): string {
 	return String(v);
 }
 
-export function interpolateTemplate(tpl: string, body: unknown, headers: Record<string, string>): string {
-	return tpl.replace(/\{\{\s*(payload|headers)\.([^}\s]+)\s*\}\}|\{\{\s*payload\s*\}\}/g, (whole, prefix: string | undefined, path: string | undefined) => {
-		if (prefix === "headers" && path !== undefined) {
-			const lower = path.toLowerCase();
-			for (const [k, v] of Object.entries(headers)) {
-				if (k.toLowerCase() === lower) return v;
+export function interpolateTemplate(
+	tpl: string,
+	body: unknown,
+	headers: Record<string, string>,
+): string {
+	return tpl.replace(
+		/\{\{\s*(payload|headers)\.([^}\s]+)\s*\}\}|\{\{\s*payload\s*\}\}/g,
+		(_whole, prefix: string | undefined, path: string | undefined) => {
+			if (prefix === "headers" && path !== undefined) {
+				const lower = path.toLowerCase();
+				for (const [k, v] of Object.entries(headers)) {
+					if (k.toLowerCase() === lower) return v;
+				}
+				return "";
 			}
-			return "";
-		}
-		if (prefix === "payload" && path !== undefined) {
-			const v = lookupPath(body, path);
-			return v === undefined ? "" : stringifyValue(v);
-		}
-		return body === null || body === undefined ? "" : JSON.stringify(body);
-	});
+			if (prefix === "payload" && path !== undefined) {
+				const v = lookupPath(body, path);
+				return v === undefined ? "" : stringifyValue(v);
+			}
+			return body === null || body === undefined ? "" : JSON.stringify(body);
+		},
+	);
 }
 
 export async function runJob(
@@ -74,13 +81,17 @@ export async function runJob(
 	timeoutMs = DEFAULT_TIMEOUT_MS,
 	interpolate?: (prompt: string) => string,
 ): Promise<{ runId: string; status: string }> {
-	const job = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as JobRow | undefined;
+	const job = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as
+		| JobRow
+		| undefined;
 	if (!job) throw new Error(`Job ${jobId} not found`);
 
 	let cwd = job.cwd;
 	let model = job.model;
 	if (job.project_id) {
-		const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(job.project_id) as ProjectRow | undefined;
+		const project = db
+			.prepare("SELECT * FROM projects WHERE id = ?")
+			.get(job.project_id) as ProjectRow | undefined;
 		if (project) {
 			if (!cwd) cwd = project.cwd;
 			if (!model && project.default_model) model = project.default_model;
@@ -89,27 +100,35 @@ export async function runJob(
 	if (!cwd) cwd = process.cwd();
 
 	const running = db
-		.prepare("SELECT id FROM job_runs WHERE job_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1")
+		.prepare(
+			"SELECT id FROM job_runs WHERE job_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+		)
 		.get(jobId) as { id: string } | undefined;
 	if (running) {
-		const row = db.prepare("SELECT started_at FROM job_runs WHERE id = ?").get(running.id) as { started_at: string };
+		const row = db
+			.prepare("SELECT started_at FROM job_runs WHERE id = ?")
+			.get(running.id) as { started_at: string };
 		const age = Date.now() - new Date(row.started_at).getTime();
 		if (age < 5 * 60_000) {
 			const runId = Bun.randomUUIDv7();
 			db.prepare(
 				"INSERT INTO job_runs (id, job_id, started_at, finished_at, status, error) VALUES (?, ?, ?, ?, 'skipped', ?)",
-			).run(runId, jobId, new Date().toISOString(), new Date().toISOString(), "previous run still active");
+			).run(
+				runId,
+				jobId,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"previous run still active",
+			);
 			return { runId, status: "skipped" };
 		}
 	}
 
 	const runId = Bun.randomUUIDv7();
 	const startedAt = new Date().toISOString();
-	db.prepare("INSERT INTO job_runs (id, job_id, started_at, status) VALUES (?, ?, ?, 'running')").run(
-		runId,
-		jobId,
-		startedAt,
-	);
+	db.prepare(
+		"INSERT INTO job_runs (id, job_id, started_at, status) VALUES (?, ?, ?, 'running')",
+	).run(runId, jobId, startedAt);
 
 	const env = buildInjectedEnv(db, masterKeyPath, agentDir);
 	let argv: string[];
@@ -118,7 +137,9 @@ export async function runJob(
 		if (job.script_source === "file") {
 			argv = ["bash", job.script ?? "", ...scriptArgs];
 		} else {
-			const inline = interpolate ? interpolate(job.script ?? "") : (job.script ?? "");
+			const inline = interpolate
+				? interpolate(job.script ?? "")
+				: (job.script ?? "");
 			argv = ["bash", "-c", inline, "--", ...scriptArgs];
 		}
 	} else {
@@ -153,7 +174,10 @@ export async function runJob(
 		]);
 		clearTimeout(timeout);
 		exitCode = exit;
-		output = truncate(stdout + (stderr ? `\n[stderr]\n${stderr}` : ""), MAX_OUTPUT);
+		output = truncate(
+			stdout + (stderr ? `\n[stderr]\n${stderr}` : ""),
+			MAX_OUTPUT,
+		);
 		if (exit !== 0) {
 			status = "error";
 			error = `Exit ${exit}`;
@@ -164,14 +188,9 @@ export async function runJob(
 		output = truncate(error, MAX_OUTPUT);
 	}
 
-	db.prepare("UPDATE job_runs SET finished_at = ?, status = ?, exit_code = ?, output = ?, error = ? WHERE id = ?").run(
-		new Date().toISOString(),
-		status,
-		exitCode,
-		output,
-		error,
-		runId,
-	);
+	db.prepare(
+		"UPDATE job_runs SET finished_at = ?, status = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
+	).run(new Date().toISOString(), status, exitCode, output, error, runId);
 
 	return { runId, status };
 }
@@ -181,21 +200,26 @@ export async function runJob(
  * and delete any run older than RUNS_KEEP_DAYS.
  */
 export function pruneOldRuns(db: Database): void {
-	const cutoff = new Date(Date.now() - RUNS_KEEP_DAYS * 86_400_000).toISOString();
+	const cutoff = new Date(
+		Date.now() - RUNS_KEEP_DAYS * 86_400_000,
+	).toISOString();
 	// Delete runs older than retention period
 	db.prepare("DELETE FROM job_runs WHERE started_at < ?").run(cutoff);
 	// For each job, keep only the most recent MAX_RUNS_PER_JOB runs
-	const jobs = db.prepare("SELECT DISTINCT job_id FROM job_runs").all() as { job_id: string }[];
+	const jobs = db.prepare("SELECT DISTINCT job_id FROM job_runs").all() as {
+		job_id: string;
+	}[];
 	for (const { job_id } of jobs) {
 		const stale = db
-			.prepare("SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT -1 OFFSET ?")
+			.prepare(
+				"SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT -1 OFFSET ?",
+			)
 			.all(job_id, MAX_RUNS_PER_JOB) as { id: string }[];
 		if (stale.length > 0) {
-			const ids = stale.map(r => r.id);
-			db.prepare(`DELETE FROM job_runs WHERE job_id = ? AND id IN (${ids.map(() => "?").join(",")})`).run(
-				job_id,
-				...ids,
-			);
+			const ids = stale.map((r) => r.id);
+			db.prepare(
+				`DELETE FROM job_runs WHERE job_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
+			).run(job_id, ...ids);
 		}
 	}
 }

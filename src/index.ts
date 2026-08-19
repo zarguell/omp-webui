@@ -6,9 +6,12 @@ import { pruneOldRuns } from "./cron/runner";
 import { getDb } from "./db";
 import { buildInjectedEnv } from "./secrets/env";
 import { getSessionFile, listSessions } from "./sessions/listing";
-import { getRpcSession, killAllRpcSessions, spawnOmpRpc } from "./sessions/spawn";
+import {
+	getRpcSession,
+	killAllRpcSessions,
+	spawnOmpRpc,
+} from "./sessions/spawn";
 import { streamSessionFile } from "./sessions/stream";
-import { startWebhookServer } from "./webhooks/server";
 import {
 	attachWs,
 	createTerminal,
@@ -20,6 +23,7 @@ import {
 	terminalInput,
 	terminalResize,
 } from "./terminals/manager";
+import { startWebhookServer } from "./webhooks/server";
 
 const config = getConfig();
 const db = getDb(config.dbPath);
@@ -41,7 +45,10 @@ function badRequest(msg: string): Response {
 
 async function parseJson(req: Request): Promise<Record<string, unknown>> {
 	const body = await req.json().catch(() => null);
-	return (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+	return (body && typeof body === "object" ? body : {}) as Record<
+		string,
+		unknown
+	>;
 }
 
 function getSessionsRoot(): string {
@@ -49,11 +56,20 @@ function getSessionsRoot(): string {
 }
 
 function newWebhookToken(): string {
-	return crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+	return (
+		crypto.randomUUID().replace(/-/g, "") +
+		crypto.randomUUID().replace(/-/g, "")
+	);
 }
 
-function webhookPathFor(job: { id: string; trigger: string | null; webhook_token: string | null }): string | null {
-	return job.trigger === "webhook" && job.webhook_token ? `/hook/${job.id}/${job.webhook_token}` : null;
+function webhookPathFor(job: {
+	id: string;
+	trigger: string | null;
+	webhook_token: string | null;
+}): string | null {
+	return job.trigger === "webhook" && job.webhook_token
+		? `/hook/${job.id}/${job.webhook_token}`
+		: null;
 }
 
 // Prevent concurrent resume/spawn for the same session ID
@@ -70,7 +86,9 @@ const server = Bun.serve({
 		if (pathname === "/api/health") return json({ ok: true });
 
 		if (pathname === "/api/projects" && method === "GET") {
-			const rows = db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all();
+			const rows = db
+				.prepare("SELECT * FROM projects ORDER BY created_at DESC")
+				.all();
 			return json(rows);
 		}
 		if (pathname === "/api/projects" && method === "POST") {
@@ -81,7 +99,9 @@ const server = Bun.serve({
 			const id = Bun.randomUUIDv7();
 			const now = new Date().toISOString();
 			try {
-				db.prepare("INSERT INTO projects (id, name, cwd, default_model, created_at) VALUES (?, ?, ?, ?, ?)").run(
+				db.prepare(
+					"INSERT INTO projects (id, name, cwd, default_model, created_at) VALUES (?, ?, ?, ?, ?)",
+				).run(
 					id,
 					name,
 					path.resolve(cwd),
@@ -92,7 +112,13 @@ const server = Bun.serve({
 				return badRequest(String(e));
 			}
 			return json(
-				{ id, name, cwd: path.resolve(cwd), default_model: body.default_model ?? null, created_at: now },
+				{
+					id,
+					name,
+					cwd: path.resolve(cwd),
+					default_model: body.default_model ?? null,
+					created_at: now,
+				},
 				201,
 			);
 		}
@@ -122,7 +148,9 @@ const server = Bun.serve({
 				}
 				if (fields.length === 0) return badRequest("nothing to update");
 				vals.push(id);
-				db.prepare(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`).run(...(vals as never[]));
+				db.prepare(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`).run(
+					...(vals as never[]),
+				);
 				return json(db.prepare("SELECT * FROM projects WHERE id = ?").get(id));
 			}
 			if (method === "DELETE") {
@@ -133,16 +161,22 @@ const server = Bun.serve({
 
 		if (pathname === "/api/sessions" && method === "GET") {
 			const projectId = url.searchParams.get("projectId");
-			const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 200);
+			const limit = Math.min(
+				Math.max(Number(url.searchParams.get("limit") ?? 100), 1),
+				200,
+			);
 			const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
 			let projectCwd: string | undefined;
 			if (projectId) {
-				const proj = db.prepare("SELECT cwd FROM projects WHERE id = ?").get(projectId) as
-					| { cwd: string }
-					| undefined;
+				const proj = db
+					.prepare("SELECT cwd FROM projects WHERE id = ?")
+					.get(projectId) as { cwd: string } | undefined;
 				if (proj) projectCwd = proj.cwd;
 			}
-			const { sessions, total } = listSessions(getSessionsRoot(), projectCwd, { limit, offset });
+			const { sessions, total } = listSessions(getSessionsRoot(), projectCwd, {
+				limit,
+				offset,
+			});
 			return json({ sessions, total, limit, offset });
 		}
 		if (pathname === "/api/sessions" && method === "POST") {
@@ -154,12 +188,21 @@ const server = Bun.serve({
 					const prompt = String(body.prompt ?? "").trim();
 					if (prompt) {
 						try {
-							(existing.proc.stdin as unknown as { write(s: string): void }).write(
+							(
+								existing.proc.stdin as unknown as { write(s: string): void }
+							).write(
 								`${JSON.stringify({ type: "prompt", message: prompt })}\n`,
 							);
 						} catch {}
 					}
-					return json({ sessionId: resumeId, wsUrl: `/api/sessions/${resumeId}/ws`, resumed: true }, 201);
+					return json(
+						{
+							sessionId: resumeId,
+							wsUrl: `/api/sessions/${resumeId}/ws`,
+							resumed: true,
+						},
+						201,
+					);
 				}
 				if (spawningSessions.has(resumeId)) {
 					return json({ error: "session is already being spawned" }, 409);
@@ -170,7 +213,10 @@ const server = Bun.serve({
 					if (!file) return notFound("session to resume not found");
 					let cwd: string | undefined;
 					try {
-						const headerText = (await Bun.file(file).text()).split("\n").slice(0, 10).join("\n");
+						const headerText = (await Bun.file(file).text())
+							.split("\n")
+							.slice(0, 10)
+							.join("\n");
 						for (const line of headerText.split("\n")) {
 							try {
 								const obj = JSON.parse(line);
@@ -193,7 +239,15 @@ const server = Bun.serve({
 						sessionId: resumeId,
 					});
 					const rpcAlive = !!getRpcSession(resumeId);
-					return json({ sessionId: resumeId, wsUrl: rpcAlive ? `/api/sessions/${resumeId}/ws` : null, resumed: true, rpcLive: rpcAlive }, 201);
+					return json(
+						{
+							sessionId: resumeId,
+							wsUrl: rpcAlive ? `/api/sessions/${resumeId}/ws` : null,
+							resumed: true,
+							rpcLive: rpcAlive,
+						},
+						201,
+					);
 				} catch (e) {
 					return json({ error: String(e) }, 500);
 				} finally {
@@ -204,9 +258,13 @@ const server = Bun.serve({
 			if (!prompt) return badRequest("prompt required");
 			const projectId = body.projectId ? String(body.projectId) : null;
 			let cwd: string | undefined;
-			let model: string | undefined = body.model ? String(body.model) : undefined;
+			let model: string | undefined = body.model
+				? String(body.model)
+				: undefined;
 			if (projectId) {
-				const proj = db.prepare("SELECT cwd, default_model FROM projects WHERE id = ?").get(projectId) as
+				const proj = db
+					.prepare("SELECT cwd, default_model FROM projects WHERE id = ?")
+					.get(projectId) as
 					| { cwd: string; default_model: string | null }
 					| undefined;
 				if (proj) {
@@ -249,8 +307,10 @@ const server = Bun.serve({
 						200,
 					);
 			} catch {}
-			const { sessions } = listSessions(getSessionsRoot(), undefined, { limit: 200 });
-			const found = sessions.find(s => s.path === file);
+			const { sessions } = listSessions(getSessionsRoot(), undefined, {
+				limit: 200,
+			});
+			const found = sessions.find((s) => s.path === file);
 			return json(found ?? { id: sid, path: file });
 		}
 		const sessionRawMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/raw$/);
@@ -268,13 +328,18 @@ const server = Bun.serve({
 					fs.readSync(fd, buf, 0, tail, stat.size - tail);
 					fs.closeSync(fd);
 					return new Response(buf, {
-						headers: { "content-type": "application/jsonl", "x-truncated": `tail 256KB of ${stat.size}` },
+						headers: {
+							"content-type": "application/jsonl",
+							"x-truncated": `tail 256KB of ${stat.size}`,
+						},
 					});
 				}
 			}
 			return new Response(Bun.file(file));
 		}
-		const sessionStreamMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/stream$/);
+		const sessionStreamMatch = pathname.match(
+			/^\/api\/sessions\/([^/]+)\/stream$/,
+		);
 		if (sessionStreamMatch && method === "GET") {
 			const sid = sessionStreamMatch[1];
 			let file = getSessionFile(getSessionsRoot(), sid);
@@ -318,17 +383,21 @@ const server = Bun.serve({
 					}, 15000);
 					maxLifetime = setTimeout(() => {
 						try {
-							c.enqueue(`event: heartbeat\ndata: ${JSON.stringify({ type: "max_lifetime_reached" })}\n\n`);
+							c.enqueue(
+								`event: heartbeat\ndata: ${JSON.stringify({ type: "max_lifetime_reached" })}\n\n`,
+							);
 							c.close();
 						} catch {}
 						cleanup();
 					}, MAX_STREAM_LIFETIME_MS);
-					void streamSessionFile(file!, send, err => {
+					void streamSessionFile(file!, send, (err) => {
 						if (closed) return;
 						try {
-							c.enqueue(`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`);
+							c.enqueue(
+								`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`,
+							);
 						} catch {}
-					}).then(ctrl => {
+					}).then((ctrl) => {
 						streamCtrl = ctrl;
 					});
 				},
@@ -345,7 +414,9 @@ const server = Bun.serve({
 				},
 			});
 		}
-		const sessionPromptMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/prompt$/);
+		const sessionPromptMatch = pathname.match(
+			/^\/api\/sessions\/([^/]+)\/prompt$/,
+		);
 		if (sessionPromptMatch && method === "POST") {
 			const sid = sessionPromptMatch[1];
 			const entry = getRpcSession(sid);
@@ -362,17 +433,23 @@ const server = Bun.serve({
 			}
 			return json({ ok: true });
 		}
-		const sessionAbortMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/abort$/);
+		const sessionAbortMatch = pathname.match(
+			/^\/api\/sessions\/([^/]+)\/abort$/,
+		);
 		if (sessionAbortMatch && method === "POST") {
 			const sid = sessionAbortMatch[1];
 			const entry = getRpcSession(sid);
 			if (!entry) return notFound();
 			try {
-				(entry.proc.stdin as unknown as { write(s: string): void }).write(`${JSON.stringify({ type: "abort" })}\n`);
+				(entry.proc.stdin as unknown as { write(s: string): void }).write(
+					`${JSON.stringify({ type: "abort" })}\n`,
+				);
 			} catch {}
 			return json({ ok: true });
 		}
-		const sessionModelMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/model$/);
+		const sessionModelMatch = pathname.match(
+			/^\/api\/sessions\/([^/]+)\/model$/,
+		);
 		if (sessionModelMatch && method === "GET") {
 			const sid = sessionModelMatch[1];
 			const file = getSessionFile(getSessionsRoot(), sid);
@@ -391,7 +468,9 @@ const server = Bun.serve({
 					} catch {}
 				}
 				return json({ model: model || null });
-			} catch { return json({ model: null }); }
+			} catch {
+				return json({ model: null });
+			}
 		}
 		if (sessionModelMatch && method === "POST") {
 			const sid = sessionModelMatch[1];
@@ -402,7 +481,10 @@ const server = Bun.serve({
 			if (!selector) return badRequest("selector required");
 			const slash = selector.indexOf("/");
 			const provider = slash > 0 ? selector.slice(0, slash) : "";
-			const modelId = slash > 0 ? selector.slice(slash + 1).split(":")[0] : selector.split(":")[0];
+			const modelId =
+				slash > 0
+					? selector.slice(slash + 1).split(":")[0]
+					: selector.split(":")[0];
 			try {
 				(entry.proc.stdin as unknown as { write(s: string): void }).write(
 					`${JSON.stringify(provider ? { type: "set_model", provider, modelId } : { type: "set_model", provider: selector, modelId: "" })}\n`,
@@ -433,15 +515,28 @@ const server = Bun.serve({
 		}
 		if (pathname === "/api/providers" && method === "GET") {
 			const { listSecrets } = await import("./secrets/store");
-			const secrets = new Set(listSecrets(db).map(s => s.name));
+			const secrets = new Set(listSecrets(db).map((s) => s.name));
 			const providers = [
-				{ id: "anthropic", env: "ANTHROPIC_API_KEY", hasAuth: secrets.has("ANTHROPIC_API_KEY") },
-				{ id: "openai", env: "OPENAI_API_KEY", hasAuth: secrets.has("OPENAI_API_KEY") },
-				{ id: "openai-codex", env: "OPENAI_API_KEY", hasAuth: secrets.has("OPENAI_API_KEY") },
+				{
+					id: "anthropic",
+					env: "ANTHROPIC_API_KEY",
+					hasAuth: secrets.has("ANTHROPIC_API_KEY"),
+				},
+				{
+					id: "openai",
+					env: "OPENAI_API_KEY",
+					hasAuth: secrets.has("OPENAI_API_KEY"),
+				},
+				{
+					id: "openai-codex",
+					env: "OPENAI_API_KEY",
+					hasAuth: secrets.has("OPENAI_API_KEY"),
+				},
 				{
 					id: "google",
 					env: "GEMINI_API_KEY",
-					hasAuth: secrets.has("GEMINI_API_KEY") || secrets.has("GOOGLE_API_KEY"),
+					hasAuth:
+						secrets.has("GEMINI_API_KEY") || secrets.has("GOOGLE_API_KEY"),
 				},
 				{
 					id: "google-vertex",
@@ -451,12 +546,25 @@ const server = Bun.serve({
 				{
 					id: "github-copilot",
 					env: "GITHUB_TOKEN",
-					hasAuth: secrets.has("GITHUB_TOKEN") || secrets.has("COPILOT_GITHUB_TOKEN"),
+					hasAuth:
+						secrets.has("GITHUB_TOKEN") || secrets.has("COPILOT_GITHUB_TOKEN"),
 				},
 				{ id: "xai", env: "XAI_API_KEY", hasAuth: secrets.has("XAI_API_KEY") },
-				{ id: "groq", env: "GROQ_API_KEY", hasAuth: secrets.has("GROQ_API_KEY") },
-				{ id: "mistral", env: "MISTRAL_API_KEY", hasAuth: secrets.has("MISTRAL_API_KEY") },
-				{ id: "deepseek", env: "DEEPSEEK_API_KEY", hasAuth: secrets.has("DEEPSEEK_API_KEY") },
+				{
+					id: "groq",
+					env: "GROQ_API_KEY",
+					hasAuth: secrets.has("GROQ_API_KEY"),
+				},
+				{
+					id: "mistral",
+					env: "MISTRAL_API_KEY",
+					hasAuth: secrets.has("MISTRAL_API_KEY"),
+				},
+				{
+					id: "deepseek",
+					env: "DEEPSEEK_API_KEY",
+					hasAuth: secrets.has("DEEPSEEK_API_KEY"),
+				},
 			];
 			return json(providers);
 		}
@@ -464,7 +572,8 @@ const server = Bun.serve({
 		if (pathname === "/api/settings" && method === "GET") {
 			try {
 				const cfgPath = path.join(config.agentDir, "config.yml");
-				if (!fs.existsSync(cfgPath)) return json({ webhookPort: config.webhookPort });
+				if (!fs.existsSync(cfgPath))
+					return json({ webhookPort: config.webhookPort });
 				const { YAML } = await import("bun");
 				const raw = YAML.parse(await Bun.file(cfgPath).text());
 				return json({ ...(raw ?? {}), webhookPort: config.webhookPort });
@@ -481,15 +590,22 @@ const server = Bun.serve({
 				let existing: Record<string, unknown> = {};
 				if (fs.existsSync(cfgPath)) {
 					try {
-						existing = (YAML.parse(await Bun.file(cfgPath).text()) as Record<string, unknown>) ?? {};
+						existing =
+							(YAML.parse(await Bun.file(cfgPath).text()) as Record<
+								string,
+								unknown
+							>) ?? {};
 					} catch {}
 				}
 				if (body.patch && typeof body.patch === "object") {
-					for (const [k, v] of Object.entries(body.patch as Record<string, unknown>)) {
+					for (const [k, v] of Object.entries(
+						body.patch as Record<string, unknown>,
+					)) {
 						const parts = k.split(".");
 						let cur: Record<string, unknown> = existing;
 						for (let i = 0; i < parts.length - 1; i++) {
-							if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
+							if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null)
+								cur[parts[i]] = {};
 							cur = cur[parts[i]] as Record<string, unknown>;
 						}
 						cur[parts[parts.length - 1]] = v;
@@ -498,7 +614,8 @@ const server = Bun.serve({
 					const parts = String(body.path).split(".");
 					let cur: Record<string, unknown> = existing;
 					for (let i = 0; i < parts.length - 1; i++) {
-						if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
+						if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null)
+							cur[parts[i]] = {};
 						cur = cur[parts[i]] as Record<string, unknown>;
 					}
 					cur[parts[parts.length - 1]] = body.value;
@@ -513,7 +630,9 @@ const server = Bun.serve({
 		}
 		if (pathname === "/api/settings/schema" && method === "GET") {
 			try {
-				const mod = await import("@oh-my-pi/pi-coding-agent/config/settings-schema" as string).catch(() => null);
+				const mod = await import(
+					"@oh-my-pi/pi-coding-agent/config/settings-schema" as string
+				).catch(() => null);
 				if (!mod) return json({ tabs: [], schema: {} });
 				return json({
 					tabs: (mod as { SETTING_TABS?: unknown }).SETTING_TABS ?? [],
@@ -534,7 +653,8 @@ const server = Bun.serve({
 			const value = String(body.value ?? "");
 			if (!name || !value) return badRequest("name and value required");
 			if (value.length > 8192) return badRequest("value too large (max 8192)");
-			if (db.prepare("SELECT 1 FROM secrets").all().length >= 100) return badRequest("too many secrets (max 100)");
+			if (db.prepare("SELECT 1 FROM secrets").all().length >= 100)
+				return badRequest("too many secrets (max 100)");
 			try {
 				const { createSecret } = await import("./secrets/store");
 				return json(createSecret(db, config.masterKeyPath, name, value), 201);
@@ -559,19 +679,23 @@ const server = Bun.serve({
 			if (value.length > 8192) return badRequest("value too large (max 8192)");
 			try {
 				const { updateSecret } = await import("./secrets/store");
-				return json(updateSecret(db, config.masterKeyPath, secretMatch[1], value));
+				return json(
+					updateSecret(db, config.masterKeyPath, secretMatch[1], value),
+				);
 			} catch (e) {
 				return notFound(String(e));
 			}
 		}
 
 		if (pathname === "/api/cron/jobs" && method === "GET") {
-			const rows = db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as {
+			const rows = db
+				.prepare("SELECT * FROM jobs ORDER BY created_at DESC")
+				.all() as {
 				id: string;
 				trigger: string | null;
 				webhook_token: string | null;
 			}[];
-			return json(rows.map(r => ({ ...r, webhookPath: webhookPathFor(r) })));
+			return json(rows.map((r) => ({ ...r, webhookPath: webhookPathFor(r) })));
 		}
 		if (pathname === "/api/cron/jobs" && method === "POST") {
 			const body = await parseJson(req);
@@ -582,15 +706,28 @@ const server = Bun.serve({
 			const trigger = body.trigger === "webhook" ? "webhook" : "schedule";
 			if (!name) return badRequest("name required");
 			if (kind === "script") {
-				const scriptSource = body.scriptSource === "file" ? "file" : body.scriptSource === "inline" ? "inline" : null;
-				if (!scriptSource) return badRequest("scriptSource must be 'inline' or 'file'");
-				if (typeof body.script !== "string" || !body.script.trim()) return badRequest("script required");
-				if (scriptSource === "file" && !fs.existsSync(path.resolve(body.script)))
+				const scriptSource =
+					body.scriptSource === "file"
+						? "file"
+						: body.scriptSource === "inline"
+							? "inline"
+							: null;
+				if (!scriptSource)
+					return badRequest("scriptSource must be 'inline' or 'file'");
+				if (typeof body.script !== "string" || !body.script.trim())
+					return badRequest("script required");
+				if (
+					scriptSource === "file" &&
+					!fs.existsSync(path.resolve(body.script))
+				)
 					return badRequest(`script file not found: ${body.script}`);
 			} else if (!prompt) {
 				return badRequest("prompt required");
 			}
-			if (Array.isArray(body.scriptArgs) && !body.scriptArgs.every(a => typeof a === "string"))
+			if (
+				Array.isArray(body.scriptArgs) &&
+				!body.scriptArgs.every((a) => typeof a === "string")
+			)
 				return badRequest("scriptArgs must be an array of strings");
 			if (trigger === "schedule" || cron_expr) {
 				if (!cron_expr) return badRequest("cron required for schedule trigger");
@@ -620,9 +757,15 @@ const server = Bun.serve({
 				now,
 				now,
 				kind,
-				kind === "script" ? (body.scriptSource === "file" ? "file" : "inline") : null,
+				kind === "script"
+					? body.scriptSource === "file"
+						? "file"
+						: "inline"
+					: null,
 				kind === "script" ? String(body.script) : null,
-				kind === "script" && Array.isArray(body.scriptArgs) ? JSON.stringify(body.scriptArgs) : null,
+				kind === "script" && Array.isArray(body.scriptArgs)
+					? JSON.stringify(body.scriptArgs)
+					: null,
 				trigger,
 				webhookToken,
 			);
@@ -632,11 +775,20 @@ const server = Bun.serve({
 				trigger: string | null;
 				webhook_token: string | null;
 			};
-			return json({ ...row, webhookPath: webhookPathFor(row), webhookToken: webhookToken }, 201);
+			return json(
+				{
+					...row,
+					webhookPath: webhookPathFor(row),
+					webhookToken: webhookToken,
+				},
+				201,
+			);
 		}
 		const cronJobMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)$/);
 		if (cronJobMatch && method === "GET") {
-			const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(cronJobMatch[1]);
+			const row = db
+				.prepare("SELECT * FROM jobs WHERE id = ?")
+				.get(cronJobMatch[1]);
 			if (!row) return notFound();
 			return json(row);
 		}
@@ -645,14 +797,34 @@ const server = Bun.serve({
 			const jobId = cronJobMatch[1];
 			const current = db
 				.prepare(`SELECT id, "trigger", cron_expr, kind FROM jobs WHERE id = ?`)
-				.get(jobId) as { id: string; trigger: string; cron_expr: string; kind: string } | undefined;
+				.get(jobId) as
+				| { id: string; trigger: string; cron_expr: string; kind: string }
+				| undefined;
 			if (!current) return notFound();
 			const fields: string[] = [];
 			const vals: unknown[] = [];
-			const newTrigger = body.trigger === "webhook" ? "webhook" : body.trigger === "schedule" ? "schedule" : current.trigger;
-			for (const k of ["name", "cron_expr", "prompt", "model", "project_id", "cwd", "enabled"]) {
+			const newTrigger =
+				body.trigger === "webhook"
+					? "webhook"
+					: body.trigger === "schedule"
+						? "schedule"
+						: current.trigger;
+			for (const k of [
+				"name",
+				"cron_expr",
+				"prompt",
+				"model",
+				"project_id",
+				"cwd",
+				"enabled",
+			]) {
 				let src = k === "cron_expr" ? (body.cron ?? body.cron_expr) : body[k];
-				if (k === "cron_expr" && newTrigger === "webhook" && body.trigger !== undefined) src = "";
+				if (
+					k === "cron_expr" &&
+					newTrigger === "webhook" &&
+					body.trigger !== undefined
+				)
+					src = "";
 				if (src !== undefined) {
 					if (k === "cron_expr" && src) {
 						const { validateCronExpr } = await import("./cron/crontab");
@@ -663,12 +835,21 @@ const server = Bun.serve({
 						}
 					}
 					fields.push(`${k} = ?`);
-					vals.push(k === "enabled" ? (src ? 1 : 0) : src === null ? null : String(src));
+					vals.push(
+						k === "enabled" ? (src ? 1 : 0) : src === null ? null : String(src),
+					);
 				}
 			}
-			if (newTrigger === "schedule" && current.trigger === "webhook" && body.trigger !== undefined) {
-				const effectiveCron = String(body.cron ?? body.cron_expr ?? current.cron_expr ?? "").trim();
-				if (!effectiveCron) return badRequest("cron required when switching to schedule trigger");
+			if (
+				newTrigger === "schedule" &&
+				current.trigger === "webhook" &&
+				body.trigger !== undefined
+			) {
+				const effectiveCron = String(
+					body.cron ?? body.cron_expr ?? current.cron_expr ?? "",
+				).trim();
+				if (!effectiveCron)
+					return badRequest("cron required when switching to schedule trigger");
 			}
 			if (body.trigger !== undefined) {
 				fields.push(`"trigger" = ?`);
@@ -681,10 +862,20 @@ const server = Bun.serve({
 			if (body.kind !== undefined) {
 				const kind = body.kind === "script" ? "script" : "prompt";
 				if (kind === "script") {
-					const scriptSource = body.scriptSource === "file" ? "file" : body.scriptSource === "inline" ? "inline" : null;
-					if (!scriptSource) return badRequest("scriptSource must be 'inline' or 'file'");
-					if (typeof body.script !== "string" || !body.script.trim()) return badRequest("script required");
-					if (scriptSource === "file" && !fs.existsSync(path.resolve(body.script)))
+					const scriptSource =
+						body.scriptSource === "file"
+							? "file"
+							: body.scriptSource === "inline"
+								? "inline"
+								: null;
+					if (!scriptSource)
+						return badRequest("scriptSource must be 'inline' or 'file'");
+					if (typeof body.script !== "string" || !body.script.trim())
+						return badRequest("script required");
+					if (
+						scriptSource === "file" &&
+						!fs.existsSync(path.resolve(body.script))
+					)
 						return badRequest(`script file not found: ${body.script}`);
 				}
 				fields.push("kind = ?");
@@ -701,7 +892,10 @@ const server = Bun.serve({
 				vals.push(String(body.script));
 			}
 			if (body.scriptArgs !== undefined) {
-				if (!Array.isArray(body.scriptArgs) || !body.scriptArgs.every(a => typeof a === "string"))
+				if (
+					!Array.isArray(body.scriptArgs) ||
+					!body.scriptArgs.every((a) => typeof a === "string")
+				)
 					return badRequest("scriptArgs must be an array of strings");
 				fields.push("script_args = ?");
 				vals.push(JSON.stringify(body.scriptArgs));
@@ -710,7 +904,9 @@ const server = Bun.serve({
 			fields.push("updated_at = ?");
 			vals.push(new Date().toISOString());
 			vals.push(jobId);
-			db.prepare(`UPDATE jobs SET ${fields.join(", ")} WHERE id = ?`).run(...(vals as never[]));
+			db.prepare(`UPDATE jobs SET ${fields.join(", ")} WHERE id = ?`).run(
+				...(vals as never[]),
+			);
 			syncCrontab();
 			const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as {
 				id: string;
@@ -724,27 +920,35 @@ const server = Bun.serve({
 			syncCrontab();
 			return json({ ok: true });
 		}
-		const rotateMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/rotate-token$/);
+		const rotateMatch = pathname.match(
+			/^\/api\/cron\/jobs\/([^/]+)\/rotate-token$/,
+		);
 		if (rotateMatch && method === "POST") {
 			const jobId = rotateMatch[1];
-			const row = db.prepare(`SELECT id, "trigger" FROM jobs WHERE id = ?`).get(jobId) as
-				| { id: string; trigger: string | null }
-				| undefined;
+			const row = db
+				.prepare(`SELECT id, "trigger" FROM jobs WHERE id = ?`)
+				.get(jobId) as { id: string; trigger: string | null } | undefined;
 			if (!row) return notFound();
-			if (row.trigger !== "webhook") return badRequest("job is not a webhook job");
+			if (row.trigger !== "webhook")
+				return badRequest("job is not a webhook job");
 			const token = newWebhookToken();
-			db.prepare("UPDATE jobs SET webhook_token = ?, updated_at = ? WHERE id = ?").run(
-				token,
-				new Date().toISOString(),
-				jobId,
-			);
-			return json({ webhookToken: token, webhookPath: `/hook/${jobId}/${token}` });
+			db.prepare(
+				"UPDATE jobs SET webhook_token = ?, updated_at = ? WHERE id = ?",
+			).run(token, new Date().toISOString(), jobId);
+			return json({
+				webhookToken: token,
+				webhookPath: `/hook/${jobId}/${token}`,
+			});
 		}
-		const cronTriggerMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/trigger$/);
+		const cronTriggerMatch = pathname.match(
+			/^\/api\/cron\/jobs\/([^/]+)\/trigger$/,
+		);
 		if (cronTriggerMatch && method === "POST") {
 			try {
 				const body = await parseJson(req);
-				const { runJob: runCronJob, interpolateTemplate } = await import("./cron/runner");
+				const { runJob: runCronJob, interpolateTemplate } = await import(
+					"./cron/runner"
+				);
 				const interpolate =
 					body.payload !== undefined
 						? (p: string) => interpolateTemplate(p, body.payload, {})
@@ -765,29 +969,47 @@ const server = Bun.serve({
 		if (pathname === "/api/cron/runs" && method === "GET") {
 			const jobId = url.searchParams.get("jobId");
 			const rows = jobId
-				? db.prepare("SELECT * FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 100").all(jobId)
-				: db.prepare("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 100").all();
+				? db
+						.prepare(
+							"SELECT * FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 100",
+						)
+						.all(jobId)
+				: db
+						.prepare(
+							"SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 100",
+						)
+						.all();
 			return json(rows);
 		}
 		const cronRunMatch = pathname.match(/^\/api\/cron\/runs\/([^/]+)$/);
 		if (cronRunMatch && method === "GET") {
-			const row = db.prepare("SELECT * FROM job_runs WHERE id = ?").get(cronRunMatch[1]);
+			const row = db
+				.prepare("SELECT * FROM job_runs WHERE id = ?")
+				.get(cronRunMatch[1]);
 			if (!row) return notFound();
 			return json(row);
 		}
 
-		const internalTriggerMatch = pathname.match(/^\/internal\/cron\/trigger\/([^/]+)$/);
+		const internalTriggerMatch = pathname.match(
+			/^\/internal\/cron\/trigger\/([^/]+)$/,
+		);
 		if (internalTriggerMatch && method === "POST") {
 			try {
 				const { runJob: runCronJob2 } = await import("./cron/runner");
-				const result = await runCronJob2(db, config.masterKeyPath, config.agentDir, internalTriggerMatch[1]);
+				const result = await runCronJob2(
+					db,
+					config.masterKeyPath,
+					config.agentDir,
+					internalTriggerMatch[1],
+				);
 				return json(result);
 			} catch (e) {
 				return json({ error: String(e) }, 500);
 			}
 		}
 
-		if (pathname === "/api/terminals" && method === "GET") return json(listTerminals());
+		if (pathname === "/api/terminals" && method === "GET")
+			return json(listTerminals());
 		if (pathname === "/api/terminals" && method === "POST") {
 			const body = await parseJson(req);
 			try {
@@ -798,7 +1020,10 @@ const server = Bun.serve({
 					rows: body.rows ? Number(body.rows) : undefined,
 					env: buildInjectedEnv(db, config.masterKeyPath, config.agentDir),
 				});
-				return json({ id: entry.id, cwd: entry.cwd, createdAt: entry.createdAt }, 201);
+				return json(
+					{ id: entry.id, cwd: entry.cwd, createdAt: entry.createdAt },
+					201,
+				);
 			} catch (e) {
 				return badRequest(String(e));
 			}
@@ -813,7 +1038,9 @@ const server = Bun.serve({
 			const entry = getTerminal(id);
 			if (!entry) return notFound("terminal not found");
 			if (
-				(server as unknown as { upgrade(r: Request, o: unknown): boolean }).upgrade(req, { data: { url: req.url } })
+				(
+					server as unknown as { upgrade(r: Request, o: unknown): boolean }
+				).upgrade(req, { data: { url: req.url } })
 			)
 				return undefined as unknown as Response;
 			return new Response("Upgrade failed", { status: 426 });
@@ -823,7 +1050,9 @@ const server = Bun.serve({
 			const proc = getRpcSession(sid);
 			if (!proc) return notFound("no active rpc session");
 			if (
-				(server as unknown as { upgrade(r: Request, o: unknown): boolean }).upgrade(req, { data: { url: req.url } })
+				(
+					server as unknown as { upgrade(r: Request, o: unknown): boolean }
+				).upgrade(req, { data: { url: req.url } })
 			)
 				return undefined as unknown as Response;
 			return new Response("Upgrade failed", { status: 426 });
@@ -831,10 +1060,14 @@ const server = Bun.serve({
 
 		const distDir = path.join(import.meta.dir, "../dist/web");
 		const normalized = path.normalize(pathname);
-		if (normalized.includes("..")) return new Response("Not found", { status: 404 });
+		if (normalized.includes(".."))
+			return new Response("Not found", { status: 404 });
 		const webFile = normalized === "/" ? "/index.html" : normalized;
 		const filePath = path.join(distDir, webFile);
-		if (!filePath.startsWith(distDir + path.sep) && filePath !== path.join(distDir, "index.html"))
+		if (
+			!filePath.startsWith(distDir + path.sep) &&
+			filePath !== path.join(distDir, "index.html")
+		)
 			return new Response("Not found", { status: 404 });
 		const securityHeaders: Record<string, string> = {
 			"x-content-type-options": "nosniff",
@@ -844,13 +1077,15 @@ const server = Bun.serve({
 		const file = Bun.file(filePath);
 		if (await file.exists()) {
 			const res = new Response(file);
-			for (const [k, v] of Object.entries(securityHeaders)) res.headers.set(k, v);
+			for (const [k, v] of Object.entries(securityHeaders))
+				res.headers.set(k, v);
 			return res;
 		}
 		const indexFile = Bun.file(path.join(distDir, "index.html"));
 		if (await indexFile.exists()) {
 			const res = new Response(indexFile);
-			for (const [k, v] of Object.entries(securityHeaders)) res.headers.set(k, v);
+			for (const [k, v] of Object.entries(securityHeaders))
+				res.headers.set(k, v);
 			return res;
 		}
 		return new Response("Not found", { status: 404 });
@@ -858,7 +1093,8 @@ const server = Bun.serve({
 
 	websocket: {
 		open(ws) {
-			const url = (ws as unknown as { data?: { url?: string } }).data?.url ?? "";
+			const url =
+				(ws as unknown as { data?: { url?: string } }).data?.url ?? "";
 			const termMatch = url.match(/\/api\/terminals\/([^/]+)\/ws/);
 			const sessMatch = url.match(/\/api\/sessions\/([^/]+)\/ws/);
 			if (termMatch) {
@@ -882,14 +1118,18 @@ const server = Bun.serve({
 			}
 		},
 		async message(ws, message) {
-			const raw = typeof message === "string" ? message : new TextDecoder().decode(message as Uint8Array);
+			const raw =
+				typeof message === "string"
+					? message
+					: new TextDecoder().decode(message as Uint8Array);
 			let parsed: Record<string, unknown>;
 			try {
 				parsed = JSON.parse(raw) as Record<string, unknown>;
 			} catch {
 				parsed = { type: "input", data: raw };
 			}
-			const url = (ws as unknown as { data?: { url?: string } }).data?.url ?? "";
+			const url =
+				(ws as unknown as { data?: { url?: string } }).data?.url ?? "";
 			const termMatch = url.match(/\/api\/terminals\/([^/]+)\/ws/);
 			const sessMatch = url.match(/\/api\/sessions\/([^/]+)\/ws/);
 			if (termMatch) {
@@ -903,7 +1143,11 @@ const server = Bun.serve({
 				}
 				if (parsed.type === "input" && typeof parsed.data === "string") {
 					terminalInput(id, parsed.data);
-				} else if (parsed.type === "resize" && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
+				} else if (
+					parsed.type === "resize" &&
+					typeof parsed.cols === "number" &&
+					typeof parsed.rows === "number"
+				) {
 					terminalResize(id, parsed.cols, parsed.rows);
 				}
 				return;
@@ -925,26 +1169,29 @@ const server = Bun.serve({
 						);
 					} catch {}
 				} else if (parsed.type === "abort") {
-				try {
-					(entry.proc.stdin as unknown as { write(s: string): void }).write(
-						`${JSON.stringify({ type: "abort" })}\n`,
-					);
-				} catch {}
-			}
+					try {
+						(entry.proc.stdin as unknown as { write(s: string): void }).write(
+							`${JSON.stringify({ type: "abort" })}\n`,
+						);
+					} catch {}
+				}
 			}
 		},
 		close(ws) {
 			const id = (ws as unknown as { terminalId?: string }).terminalId;
 			if (id) {
 				const entry = getTerminal(id);
-				if (entry) detachWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
+				if (entry)
+					detachWs(entry, ws as unknown as Bun.ServerWebSocket<unknown>);
 			}
 			const rpcId = (ws as unknown as { rpcSessionId?: string }).rpcSessionId;
 			if (rpcId) {
 				const entry = getRpcSession(rpcId);
 				if (entry)
 					try {
-						entry.wsClients.delete(ws as unknown as Bun.ServerWebSocket<unknown>);
+						entry.wsClients.delete(
+							ws as unknown as Bun.ServerWebSocket<unknown>,
+						);
 					} catch {}
 			}
 		},
@@ -969,13 +1216,19 @@ try {
 }
 
 if (config.bind === "0.0.0.0") {
-	console.warn("WARNING: omp-webui bound to 0.0.0.0 — terminal is RCE. Put behind Tailscale/reverse-proxy auth.");
+	console.warn(
+		"WARNING: omp-webui bound to 0.0.0.0 — terminal is RCE. Put behind Tailscale/reverse-proxy auth.",
+	);
 }
 console.log(
 	`omp-webui listening on http://${config.bind}:${config.port}  data=${path.dirname(config.dbPath)} agent=${config.agentDir}`,
 );
 
-const webhookServer = startWebhookServer({ db, config, masterKeyPath: config.masterKeyPath });
+const webhookServer = startWebhookServer({
+	db,
+	config,
+	masterKeyPath: config.masterKeyPath,
+});
 
 process.on("SIGINT", () => {
 	killAllRpcSessions();

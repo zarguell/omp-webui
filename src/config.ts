@@ -19,7 +19,8 @@ function localDataDir(): string {
 		Bun.file("/data/.probe").size;
 	} catch (e) {
 		const code = (e as { code?: string }).code;
-		if (code === "EROFS" || String(e).includes("EROFS")) return path.join(process.env.HOME ?? "/tmp", ".omp-webui");
+		if (code === "EROFS" || String(e).includes("EROFS"))
+			return path.join(process.env.HOME ?? "/tmp", ".omp-webui");
 	}
 	try {
 		fs.mkdirSync("/data", { recursive: true });
@@ -34,15 +35,22 @@ function localDataDir(): string {
 
 export function getConfig(): WebuiConfig {
 	const dataDir = localDataDir();
-	const port = Number.parseInt(process.env.OMP_WEBUI_PORT ?? process.env.PORT ?? "8787", 10);
-	const webhookPort = Number.parseInt(process.env.OMP_WEBUI_WEBHOOK_PORT ?? "8788", 10);
+	const port = Number.parseInt(
+		process.env.OMP_WEBUI_PORT ?? process.env.PORT ?? "8787",
+		10,
+	);
+	const webhookPort = Number.parseInt(
+		process.env.OMP_WEBUI_WEBHOOK_PORT ?? "8788",
+		10,
+	);
 	const bind = process.env.OMP_WEBUI_BIND ?? "127.0.0.1";
 	return {
 		dataDir,
 		agentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(dataDir, "agent"),
 		dbPath: process.env.OMP_WEBUI_DB_PATH ?? path.join(dataDir, "omp-webui.db"),
 		crontabPath: process.env.CRONTAB_PATH ?? path.join(dataDir, "crontab"),
-		masterKeyPath: process.env.MASTER_KEY_PATH ?? path.join(dataDir, "keys", "master.key"),
+		masterKeyPath:
+			process.env.MASTER_KEY_PATH ?? path.join(dataDir, "keys", "master.key"),
 		port: Number.isNaN(port) ? 8787 : port,
 		bind,
 		webhookPort: Number.isNaN(webhookPort) ? 8788 : webhookPort,

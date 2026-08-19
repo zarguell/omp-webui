@@ -8,12 +8,12 @@ interface HookJobRow {
 	webhook_token: string | null;
 }
 
-
 export type WebhookServer = Bun.Server<undefined>;
-const notFound = () => new Response(JSON.stringify({ error: "not found" }), {
-	status: 404,
-	headers: { "content-type": "application/json" },
-});
+const notFound = () =>
+	new Response(JSON.stringify({ error: "not found" }), {
+		status: 404,
+		headers: { "content-type": "application/json" },
+	});
 
 export function startWebhookServer(opts: {
 	db: Database;
@@ -34,21 +34,30 @@ export function startWebhookServer(opts: {
 				const match = url.pathname.match(/^\/hook\/([^/]+)\/([^/]+)$/);
 				if (!match || req.method !== "POST") return notFound();
 				const [, jobId, token] = match;
-				const job = db.prepare(`SELECT id, "trigger", webhook_token FROM jobs WHERE id = ?`).get(jobId) as
-					| HookJobRow
-					| undefined;
-				if (!job || job.trigger !== "webhook" || job.webhook_token === null || job.webhook_token !== token) {
+				const job = db
+					.prepare(`SELECT id, "trigger", webhook_token FROM jobs WHERE id = ?`)
+					.get(jobId) as HookJobRow | undefined;
+				if (job?.trigger !== "webhook" || job.webhook_token !== token) {
 					return notFound();
 				}
 				const body = await req.json().catch(() => null);
 				const headers: Record<string, string> = {};
-				req.headers.forEach((v, k) => { headers[k] = v; });
-				const result = runJob(db, masterKeyPath, config.agentDir, jobId, 600_000, p =>
-					interpolateTemplate(p, body, headers),
+				req.headers.forEach((v, k) => {
+					headers[k] = v;
+				});
+				const result = runJob(
+					db,
+					masterKeyPath,
+					config.agentDir,
+					jobId,
+					600_000,
+					(p) => interpolateTemplate(p, body, headers),
 				);
 				result
-					.then(r => console.log(`webhook job ${jobId} ${r.status} (run ${r.runId})`))
-					.catch(e => console.error(`webhook job ${jobId} failed:`, e));
+					.then((r) =>
+						console.log(`webhook job ${jobId} ${r.status} (run ${r.runId})`),
+					)
+					.catch((e) => console.error(`webhook job ${jobId} failed:`, e));
 				return new Response(JSON.stringify({ status: "triggered", jobId }), {
 					status: 202,
 					headers: { "content-type": "application/json" },
